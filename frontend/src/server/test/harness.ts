@@ -46,8 +46,11 @@ export const uniq = (stem = "u") => `${stem}${Date.now().toString(36)}${++counte
 
 export async function resetDb() {
   const db = getDb();
+  // Safety: never wipe anything but a dedicated test database.
+  const [{ name }] = (await db.execute<{ name: string }>(sql`SELECT current_database() AS name`)).rows as [{ name: string }];
+  if (!name.endsWith("_test")) throw new Error(`Refusing to reset non-test database "${name}"`);
   // Ordered deletes (not TRUNCATE … CASCADE, which would also wipe the reference taxonomy via created_by FKs).
-  await db.execute(sql`TRUNCATE subscription_invoices, payments, subscriptions, promotional_access, event_purchases, payment_webhooks,
+  await db.execute(sql`TRUNCATE organization_event_credits, subscription_invoices, payments, subscriptions, promotional_access, event_purchases, payment_webhooks,
     user_entitlements, organization_entitlements, rate_limit_counters, idempotency_keys, audit_logs, moderation_actions`);
   await db.execute(sql`DELETE FROM interests WHERE created_by_attendee_id IS NOT NULL OR status <> 'approved'`);
   await db.execute(sql`DELETE FROM skills WHERE created_by_attendee_id IS NOT NULL OR status <> 'approved'`);

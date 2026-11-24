@@ -163,14 +163,20 @@ const routes: Route[] = [
   R("GET", "/organizations/:orgId/dashboard", organizers.dashboard),
   R("GET", "/organizations/:orgId/events", ev.listOrgEvents),
   R("POST", "/organizations/:orgId/events", ev.createEvent),
-  R("GET", "/organizations/:orgId/billing", async (ctx) => {
-    await organizers.requireOrgMember(ctx, ctx.params.orgId!);
-    return billing.effectiveEntitlements(ctx.db, { organizationId: ctx.params.orgId! });
-  }),
+  R("GET", "/organizations/:orgId/billing", billing.orgBilling),
+  R("POST", "/organizations/:orgId/billing/checkout", billing.orgCheckout),
+  R("POST", "/organizations/:orgId/billing/cancel", billing.orgCancelSubscription),
+  R("POST", "/organizations/:orgId/billing/event-credits/order", billing.eventCreditOrder),
+  R("POST", "/organizations/:orgId/billing/event-credits/verify", billing.eventCreditVerify),
+  R("GET", "/organizations/:orgId/members", organizers.listMembers),
+  R("POST", "/organizations/:orgId/members", organizers.addMember),
+  R("DELETE", "/organizations/:orgId/members/:userId", organizers.removeMember),
+  R("GET", "/organizations/:orgId/analytics", organizers.orgAnalytics),
 
   // ---------- Event management, QR, configuration, participants (M14–M17) ----------
   R("GET", "/organizer/events/:eventId", ev.getEvent),
   R("PATCH", "/organizer/events/:eventId", ev.updateEvent),
+  R("DELETE", "/organizer/events/:eventId", ev.deleteEvent),
   R("PUT", "/organizer/events/:eventId/banner", ev.uploadBanner),
   R("DELETE", "/organizer/events/:eventId/banner", ev.removeBanner),
   ...(["publish", "unpublish", "pause", "resume", "start", "end", "archive"] as const).map((a) => R("POST", `/organizer/events/:eventId/${a}`, (ctx) => ev.transition(ctx, a))),
@@ -229,6 +235,7 @@ const routes: Route[] = [
   }),
   R("POST", "/admin/promotional-access", admin.grantPromotion),
   R("POST", "/admin/promotional-access/:id/revoke", admin.revokePromotion),
+  R("POST", "/admin/event-credits/:id/revoke", admin.revokeEventCredit),
 
   // ---------- Scheduled maintenance (Vercel Cron) ----------
   R("GET", "/cron/maintenance", async (ctx) => {

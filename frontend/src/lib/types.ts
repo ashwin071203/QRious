@@ -88,7 +88,7 @@ export interface SessionInfo { id: string; device: string; createdAt: string; la
 export interface UsernameAvailability { available: boolean; normalized: string | null; reason: string | null; suggestions: string[] }
 
 export interface Entitlements { planCode: string; planName: string; features: { featureKey: string; enabled: boolean; limit: number | null }[] }
-export interface Plan { code: string; name: string; description: string | null; billingPeriod: string; priceMinor: number; currency: string; isDefault: boolean; features: string[] }
+export interface Plan { code: string; name: string; description: string | null; billingPeriod: string; priceMinor: number; currency: string; isDefault: boolean; features: string[]; purchasable?: boolean }
 
 // Organizer
 export interface OrganizerMe {
@@ -98,10 +98,21 @@ export interface OrganizerMe {
 }
 export interface OrgEventRow { id: string; name: string; categoryName: string; status: string; moderationStatus: string; startsAt: string; endsAt: string; timeZone: string; venueName: string; city: string | null; participantCount: number; bannerUrl: string | null }
 export interface OrgEventDetail extends PublicEvent {
-  status: string; moderationStatus: string; organizationId: string; categoryId: string; maxParticipants: number | null; participantCount: number; qrAccessEnabled: boolean;
+  status: string; moderationStatus: string; organizationId: string; categoryId: string; maxParticipants: number | null; participantCount: number; qrAccessEnabled: boolean; publishedAt: string | null;
   settings: Record<string, boolean | string | null>;
   qr: { code: string; url: string; createdAt: string } | null;
   suggestions: { interests: { id: string; name: string }[]; skills: { id: string; name: string }[]; intentionIds: string[] };
   intentionOptions: { id: string; label: string; group: string }[];
 }
 export interface Category { id: string; slug: string; name: string; description: string | null; imageUrl: string | null }
+
+export type OrgTier = "starter" | "pro" | "business";
+export interface OrgAllowance { freeLimit: number; eventsCreated: number; freeUsed: number; freeRemaining: number; credits: number; unlimited: boolean; canCreateEvent: boolean }
+export interface OrgBilling {
+  tier: OrgTier; planCode: string; planName: string; source: "subscription" | "promo" | null; validUntil: string | null; features: string[];
+  allowance: OrgAllowance; canManageBilling: boolean; paymentsEnabled: boolean; paymentsMode: string;
+  subscription: { status: string; planCode: string; planName: string; priceMinor: number; currentPeriodStart: string | null; currentPeriodEnd: string | null; cancelAtPeriodEnd: boolean; cancelledAt: string | null; createdAt: string } | null;
+  promotion: { planName: string; endsAt: string } | null;
+  credits: { id: string; source: string; createdAt: string; consumedAt: string | null; eventName: string | null; revokedAt: string | null }[];
+  payments: { id: string; purpose: string; description: string; amountMinor: number; refundedMinor: number; currency: string; status: string; method: string | null; createdAt: string; capturedAt: string | null }[];
+}

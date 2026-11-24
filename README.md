@@ -57,5 +57,11 @@ enabled on the account. Admin → Revenue → Razorpay shows a checklist (never 
 Razorpay test mode (or links Dashboard-made plans after validating period/amount/currency) and shows the webhook URL and events.
 Premium is granted only by the HMAC-verified webhook. Each build logs a payment configuration check (`scripts/check-gateway.ts`).
 
+Organizer pricing (D-34): Starter is free with 3 lifetime events per organization; Pro ₹499/month; Business ₹1,499/month;
+Single Event ₹199 (one extra event). Pro and Business are Razorpay subscriptions (create their plans in Admin → Revenue like Premium);
+Single Event uses Razorpay Orders: the checkout signature is verified, then the payment is fetched (and captured) server-to-server,
+and the `payment.captured` / `order.paid` webhooks grant the same credit idempotently. Add `payment.captured`, `payment.failed` and
+`order.paid` to the webhook's events.
+
 Live: https://qrious-rho.vercel.app (Neon PostgreSQL, Singapore). First admin: register an organizer, enter the token
 from `QRIOUS_ADMIN_BOOTSTRAP_TOKEN` under Organizer → Account, then open `/admin` and enroll an authenticator app (D-24).

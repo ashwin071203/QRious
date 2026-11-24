@@ -4,7 +4,6 @@
  * events or people. Run: `npm run db:migrate` (also runs automatically during Vercel builds).
  */
 import { config as loadEnv } from "dotenv";
-loadEnv({ path: [".env.local", ".env"], quiet: true });
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { sql } from "drizzle-orm";
@@ -19,7 +18,8 @@ const norm = (s: string) => {
 };
 
 const PREMIUM = ["attendee.discover.advanced_filters", "attendee.matching.detailed", "attendee.profile.badge", "attendee.saved_by.visibility", "attendee.analytics"];
-const PRO = ["org.pulse.advanced", "org.reports.export", "org.branding"];
+// Organizer features (PRD §19.3) — only features that exist in the product. Keep in sync with server/modules/entitlements.ts.
+const PRO = ["org.events.unlimited", "org.pulse.advanced", "org.participants.detailed_stats", "org.networking.advanced", "org.branding", "org.reports.export"];
 const BUSINESS = [...PRO, "org.members", "org.analytics.cross_event"];
 
 export async function run(url: string) {
@@ -66,21 +66,33 @@ export async function run(url: string) {
           ON CONFLICT DO NOTHING`);
     }
 
-    // Plans (PRD §19). All numeric limits null until approved (D-20); per-event package inactive until priced.
+    // Plans (PRD §19). Attendee numeric limits stay null until approved (D-20). Organizer pricing: Starter free with
+    // 3 lifetime events, Pro ₹499/month, Business ₹1,499/month, Single Event ₹199 (one additional event).
     const plans: { code: string; audience: string; name: string; description: string; period: string; price: number; isDefault: boolean; active: boolean; on: string[]; off: string[]; limits: string[]; sort: number }[] = [
       { code: "attendee_free", audience: "attendee", name: "Free", description: "Essential networking for everyone.", period: "none", price: 0, isDefault: true, active: true, on: [], off: PREMIUM, limits: ["attendee.saved_profiles.limit"], sort: 0 },
       { code: "attendee_premium_monthly", audience: "attendee", name: "Premium", description: "Advanced discovery and networking.", period: "month", price: 9900, isDefault: false, active: true, on: PREMIUM, off: [], limits: ["attendee.saved_profiles.limit"], sort: 1 },
       { code: "attendee_premium_yearly", audience: "attendee", name: "Premium (yearly)", description: "Advanced discovery and networking.", period: "year", price: 79900, isDefault: false, active: true, on: PREMIUM, off: [], limits: ["attendee.saved_profiles.limit"], sort: 2 },
-      { code: "org_starter", audience: "organization", name: "Starter", description: "Create and publish events with QR networking.", period: "none", price: 0, isDefault: true, active: true, on: [], off: BUSINESS, limits: ["org.events.active.limit", "org.participants.limit"], sort: 10 },
-      { code: "org_pro_monthly", audience: "organization", name: "Pro", description: "Advanced event management and networking tools.", period: "month", price: 49900, isDefault: false, active: true, on: PRO, off: ["org.members", "org.analytics.cross_event"], limits: ["org.events.active.limit", "org.participants.limit"], sort: 11 },
-      { code: "org_business_monthly", audience: "organization", name: "Business", description: "Multi-member organizations and cross-event insights.", period: "month", price: 149900, isDefault: false, active: true, on: BUSINESS, off: [], limits: ["org.events.active.limit", "org.participants.limit"], sort: 12 },
-      { code: "org_event_package", audience: "organization", name: "Single event package", description: "One-time purchase for a single event (price to be confirmed).", period: "one_time", price: 19900, isDefault: false, active: false, on: PRO, off: [], limits: [], sort: 13 },
+      { code: "org_starter", audience: "organization", name: "Starter", description: "Three free events with QR networking, participants and basic Pulse.", period: "none", price: 0, isDefault: true, active: true, on: [], off: BUSINESS, limits: [], sort: 10 },
+      { code: "org_pro_monthly", audience: "organization", name: "Pro", description: "Unlimited events with advanced event management and networking tools.", period: "month", price: 49900, isDefault: false, active: true, on: PRO, off: ["org.members", "org.analytics.cross_event"], limits: [], sort: 11 },
+      { code: "org_business_monthly", audience: "organization", name: "Business", description: "Everything in Pro, plus team members and cross-event analytics.", period: "month", price: 149900, isDefault: false, active: true, on: BUSINESS, off: [], limits: [], sort: 12 },
+      { code: "org_event_package", audience: "organization", name: "Single Event", description: "One additional event, no subscription.", period: "one_time", price: 19900, isDefault: false, active: true, on: [], off: [], limits: [], sort: 13 },
     ];
     for (const p of plans) {
-      await db.insert(schema.subscriptionPlans).values({ code: p.code, audience: p.audience, name: p.name, description: p.description, billingPeriod: p.period, priceMinor: p.price, isDefault: p.isDefault, isActive: p.active, sortOrder: p.sort }).onConflictDoNothing();
+      // Upsert so pricing/feature changes reach existing databases. A price never changes under a linked gateway plan.
+      await db.execute(sql`INSERT INTO subscription_plans (code, audience, name, description, billing_period, price_minor, is_default, is_active, sort_order)
+        VALUES (${p.code}, ${p.audience}, ${p.name}, ${p.description}, ${p.period}, ${p.price}, ${p.isDefault}, ${p.active}, ${p.sort})
+        ON CONFLICT (code) DO UPDATE SET name = excluded.name, description = excluded.description, billing_period = excluded.billing_period, is_default = excluded.is_default,
+          is_active = excluded.is_active, sort_order = excluded.sort_order,
+          price_minor = CASE WHEN subscription_plans.gateway_plan_id IS NULL THEN excluded.price_minor ELSE subscription_plans.price_minor END`);
       const [plan] = await db.select({ id: schema.subscriptionPlans.id }).from(schema.subscriptionPlans).where(sql`code = ${p.code}`);
       const feats = [...p.on.map((k) => ({ k, e: true })), ...p.off.map((k) => ({ k, e: false })), ...p.limits.map((k) => ({ k, e: true }))];
-      for (const f of feats) await db.insert(schema.subscriptionFeatures).values({ planId: plan!.id, featureKey: f.k, enabled: f.e, limitValue: null }).onConflictDoNothing();
+      for (const f of feats)
+        await db.insert(schema.subscriptionFeatures).values({ planId: plan!.id, featureKey: f.k, enabled: f.e, limitValue: null })
+          .onConflictDoUpdate({ target: [schema.subscriptionFeatures.planId, schema.subscriptionFeatures.featureKey], set: { enabled: f.e } });
+      const keep = feats.map((f) => f.k);
+      await db.execute(keep.length
+        ? sql`DELETE FROM subscription_features WHERE plan_id = ${plan!.id} AND feature_key NOT IN (${sql.join(keep.map((k) => sql`${k}`), sql`, `)})`
+        : sql`DELETE FROM subscription_features WHERE plan_id = ${plan!.id}`);
     }
     console.log("Migrations and reference data applied.");
   } finally {
@@ -89,6 +101,9 @@ export async function run(url: string) {
 }
 
 if (process.argv[1]?.includes("migrate")) {
+  // Only when run as a script: importing this module (e.g. the test global setup) must never pull in .env.local,
+  // or test workers would inherit the development DATABASE_URL.
+  loadEnv({ path: [".env.local", ".env"], quiet: true });
   const url = 
     // DDL over a direct connection (Neon pooler runs in transaction mode)
     process.env.DATABASE_URL_UNPOOLED ?? process.env.POSTGRES_URL_NON_POOLING ?? process.env.DATABASE_URL ?? process.env.POSTGRES_URL;

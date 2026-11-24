@@ -15,6 +15,13 @@
       "when": 1795501279858,
       "tag": "0001_admin_mfa",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795519321718,
+      "tag": "0002_org_plans_allowance",
+      "breakpoints": true
     }
   ]
 }

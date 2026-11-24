@@ -157,6 +157,19 @@ Production contains no seeded organizations, events or people. Only the referenc
 ### D-33 — Premium "advanced filters"
 Module 5 filters (interests, skills, profession, intentions, availability) stay free. The Premium "advanced discovery filters" are the additional **company** and **location** filters. Numeric limits remain unset (D-20).
 
+### D-34 — Organizer pricing and lifetime free events (product owner, 2026-11-24)
+| Plan | Price | Entitlement |
+|---|---:|---|
+| Starter | Free | 3 lifetime events per organization; QR codes; participant management; basic Pulse; networking feature switches |
+| Pro | ₹499/month | Starter + unlimited events, advanced Pulse (goal/interest/skill breakdowns), detailed participant statistics, custom interest/skill/goal suggestions, custom event banners, consented participant export |
+| Business | ₹1,499/month | Pro + team members (up to 25 organizers) and cross-event analytics with an organization report |
+| Single Event | ₹199 one-time | One additional event (Razorpay Order, not a subscription) |
+
+- The allowance is per **organization**, persistent and transactional: every successfully created event (any status) increments `organizations.events_created_count`; deleting never decrements it; edits and failed creations don't touch it. Creation locks the organization row, so concurrent requests from any member can't overspend. Order of use: free allowance → Pro/Business → a Single Event credit.
+- All gating lives in `server/modules/entitlements.ts` and is enforced by the APIs (`403 entitlement_required` with `requiredPlan`, `402 event_allowance_exhausted`). Expiry, halt, cancellation or refund removes paid access but never deletes events or data; a refunded, unused Single Event credit is withdrawn.
+- Only features that exist are sold. PRD items with no implementation (e.g. priority support, custom themes) are not advertised. Attendee Premium (₹99/month, ₹799/year) is unchanged.
+- Drafts that were never published can be deleted (allowance not restored); all other events are archived instead.
+
 ## Product change log (PRD amendments made from these decisions)
 | Decision | PRD section changed |
 |---|---|

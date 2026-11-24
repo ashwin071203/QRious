@@ -299,10 +299,13 @@ export const organizations = pgTable("organizations", {
   contactPhone: text("contact_phone"),
   website: text("website"),
   status: text("status").notNull().default("active"),
+  /** Lifetime count of successfully created events. Never decremented (deleting an event does not restore allowance). */
+  eventsCreatedCount: integer("events_created_count").notNull().default(0),
   createdBy: uuid("created_by").references(() => organizerUsers.id, { onDelete: "set null" }),
   createdAt: createdAt(),
   updatedAt: ts("updated_at").notNull().defaultNow(),
-}, (t) => [uniqueIndex("ux_organizations_slug").on(t.slug), check("ck_organizations_status", inList("status", ACTIVE_SUSPENDED))]);
+}, (t) => [uniqueIndex("ux_organizations_slug").on(t.slug), check("ck_organizations_status", inList("status", ACTIVE_SUSPENDED)),
+  check("ck_organizations_events_created", sql`events_created_count >= 0`)]);
 
 export const organizationMembers = pgTable("organization_members", {
   organizationId: uuid("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
@@ -336,6 +339,8 @@ export const events = pgTable("events", {
   moderationStatus: text("moderation_status").notNull().default("ok"),
   qrAccessEnabled: boolean("qr_access_enabled").notNull().default(true),
   participantCount: integer("participant_count").notNull().default(0),
+  /** Which entitlement paid for creating this event: free allowance, a Pro/Business plan, or a single-event credit. */
+  allowanceSource: text("allowance_source"),
   publishedAt: ts("published_at"),
   activatedAt: ts("activated_at"),
   endedAt: ts("ended_at"),
@@ -351,6 +356,7 @@ export const events = pgTable("events", {
   check("ck_events_participant_count", sql`participant_count >= 0`),
   check("ck_events_status", inList("status", EVENT_STATUS)),
   check("ck_events_moderation", inList("moderation_status", MODERATION_STATUS)),
+  check("ck_events_allowance_source", sql`allowance_source IS NULL OR allowance_source IN ('free','plan','credit')`),
 ]);
 
 export const eventQrCodes = pgTable("event_qr_codes", {
@@ -711,12 +717,17 @@ export const payments = pgTable("payments", {
   refundedMinor: integer("refunded_minor").notNull().default(0),
   failureReason: text("failure_reason"),
   method: text("method"),
+  /** What the payment buys: a recurring subscription charge or a one-time single-event credit. */
+  purpose: text("purpose").notNull().default("subscription"),
+  planId: uuid("plan_id").references(() => subscriptionPlans.id, { onDelete: "restrict" }),
   capturedAt: ts("captured_at"),
   createdAt: createdAt(),
 }, (t) => [
   uniqueIndex("ux_payments_order").on(t.gatewayOrderId),
   uniqueIndex("ux_payments_payment").on(t.gatewayPaymentId),
   check("ck_payments_status", inList("status", PAYMENT_STATUS)),
+  check("ck_payments_purpose", sql`purpose IN ('subscription','event_credit')`),
+  index("ix_payments_org").on(t.organizationId, t.createdAt),
   check("ck_payments_amounts", sql`amount_minor >= 0 AND refunded_minor >= 0 AND refunded_minor <= amount_minor`),
 ]);
 
@@ -752,6 +763,25 @@ export const eventPurchases = pgTable("event_purchases", {
   status: text("status").notNull().default("pending"),
   createdAt: createdAt(),
 }, (t) => [uniqueIndex("ux_event_purchases_paid").on(t.eventId, t.planId).where(sql`status = 'paid'`)]);
+
+/** One additional event an organization may create (bought as a Single Event package, or granted by an admin). */
+export const organizationEventCredits = pgTable("organization_event_credits", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: uuid("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  source: text("source").notNull(),
+  paymentId: uuid("payment_id").references(() => payments.id, { onDelete: "restrict" }),
+  grantedBy: uuid("granted_by").references(() => organizerUsers.id, { onDelete: "set null" }),
+  reason: text("reason"),
+  /** Set when an event is created with this credit; kept even if that event is later deleted. */
+  consumedAt: ts("consumed_at"),
+  consumedEventId: uuid("consumed_event_id").references(() => events.id, { onDelete: "set null" }),
+  revokedAt: ts("revoked_at"),
+  createdAt: createdAt(),
+}, (t) => [
+  uniqueIndex("ux_event_credits_payment").on(t.paymentId).where(sql`payment_id IS NOT NULL`),
+  index("ix_event_credits_org_available").on(t.organizationId).where(sql`consumed_at IS NULL AND revoked_at IS NULL`),
+  check("ck_event_credits_source", sql`source IN ('purchase','promo')`),
+]);
 
 export const userEntitlements = pgTable("user_entitlements", {
   attendeeId: uuid("attendee_id").notNull().references(() => attendees.id, { onDelete: "cascade" }),

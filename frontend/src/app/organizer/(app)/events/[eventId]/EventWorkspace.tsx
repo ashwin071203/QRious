@@ -15,6 +15,7 @@ import { EventForm, initialForm } from "@/components/EventForm";
 import { EVENT_STATUS } from "@/components/EventStatus";
 import { TagPicker, type PickedTag } from "@/components/TagPicker";
 import { useToast } from "@/components/Providers";
+import { UpgradeHint, useOrgFeature } from "@/components/OrgPlan";
 import { api, ApiError } from "@/lib/api";
 import { availabilityLabel, cn, formatDateTime, formatEventDate, formatEventTime, relativeTime } from "@/lib/format";
 import type { OrgEventDetail, Pulse } from "@/lib/types";
@@ -58,7 +59,7 @@ export function EventWorkspace({ params }: { params: Promise<{ eventId: string }
   );
 }
 
-function useAction() {
+export function useAction() {
   const toast = useToast();
   const [busy, setBusy] = useState<string | null>(null);
   async function run<T>(name: string, fn: () => Promise<T>, ok?: string): Promise<T | undefined> {
@@ -72,6 +73,8 @@ function useAction() {
 
 function Overview({ e, onChange, goTo }: { e: OrgEventDetail; onChange: (d: OrgEventDetail) => void; goTo: (t: Tab) => void }) {
   const { busy, run } = useAction();
+  const qc = useQueryClient();
+  const router = useRouter();
   const [confirm, setConfirm] = useState<null | { action: string; title: string; body: string }>(null);
   const act = (action: string, ok: string) => run(action, () => api<OrgEventDetail>(`/organizer/events/${e.id}/${action}`, { method: "POST" }), ok).then((d) => d && onChange(d));
   const s = e.status;
@@ -98,6 +101,7 @@ function Overview({ e, onChange, goTo }: { e: OrgEventDetail; onChange: (d: OrgE
               <Button variant="ghost" icon={<Undo2 className="size-4" />} onClick={() => setConfirm({ action: "unpublish", title: "Unpublish this event?", body: "The landing page and QR code stop working until you publish again. Participants keep their profiles and connections." })}>Unpublish</Button>
             </>}
             {["draft", "ended"].includes(s) && <Button variant="ghost" icon={<Archive className="size-4" />} onClick={() => setConfirm({ action: "archive", title: "Archive this event?", body: "It's kept for your records and the QR code stops working. This can't be undone." })}>Archive</Button>}
+            {s === "draft" && !e.publishedAt && <Button variant="ghost" icon={<Trash2 className="size-4" />} onClick={() => setConfirm({ action: "delete", title: "Delete this draft?", body: "The draft is removed permanently. Deleting an event doesn't give back the event allowance it used." })}>Delete draft</Button>}
           </div>
         </section>
         <section className="card grid gap-4 p-5 sm:grid-cols-2">
@@ -113,8 +117,17 @@ function Overview({ e, onChange, goTo }: { e: OrgEventDetail; onChange: (d: OrgE
         {e.qr && s !== "draft" && <a href={e.qr.url} target="_blank" rel="noopener" className="card flex items-center gap-3 p-4 hover:border-accent/40"><Eye className="size-5 text-accent" /><span className="flex-1">View attendee landing page</span><ExternalLink className="size-4 text-text-2" /></a>}
       </aside>
       <ConfirmDialog open={!!confirm} onClose={() => setConfirm(null)} title={confirm?.title ?? ""} body={confirm?.body} danger={confirm?.action !== "end"} busy={!!busy}
-        confirmLabel={confirm?.action === "end" ? "End event" : confirm?.action === "archive" ? "Archive" : "Unpublish"}
-        onConfirm={async () => { if (confirm) await act(confirm.action, "Done"); setConfirm(null); }} />
+        confirmLabel={confirm?.action === "end" ? "End event" : confirm?.action === "archive" ? "Archive" : confirm?.action === "delete" ? "Delete draft" : "Unpublish"}
+        onConfirm={async () => {
+          if (confirm?.action === "delete") {
+            const ok = await run("delete", async () => { await api(`/organizer/events/${e.id}`, { method: "DELETE" }); return true; }, "Draft deleted");
+            setConfirm(null);
+            if (ok) { await qc.invalidateQueries({ queryKey: ["org-events"] }); router.replace("/organizer/events"); }
+            return;
+          }
+          if (confirm) await act(confirm.action, "Done");
+          setConfirm(null);
+        }} />
     </div>
   );
 }
@@ -124,6 +137,7 @@ const Info = ({ label, value }: { label: string; value: string }) => <div><p cla
 function EditTab({ e, onChange }: { e: OrgEventDetail; onChange: (d: OrgEventDetail) => void }) {
   const { busy, run } = useAction();
   const toast = useToast();
+  const branding = useOrgFeature("org.branding").has;
   async function upload(file: File) {
     if (file.size > 4 * 1024 * 1024) return toast("error", "Banner images must be 4 MB or smaller.");
     const fd = new FormData();
@@ -140,11 +154,12 @@ function EditTab({ e, onChange }: { e: OrgEventDetail; onChange: (d: OrgEventDet
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={e.bannerUrl ?? `/images/categories/${e.categorySlug}.webp`} alt="" className="size-full object-cover" />
         </div>
+        {branding === false && <UpgradeHint title="Custom event banners" className="mt-3">Upload your own banner for this event. Existing banners are always kept.</UpgradeHint>}
         <div className="mt-3 flex gap-2">
-          <label className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-2xl border border-line-strong bg-card-2 px-3.5 text-sm font-semibold hover:border-accent/60">
+          {branding !== false && <label className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-2xl border border-line-strong bg-card-2 px-3.5 text-sm font-semibold hover:border-accent/60">
             <ImagePlus className="size-4" />{busy === "banner" ? "Uploading…" : "Upload banner"}
             <input type="file" accept="image/jpeg,image/png,image/webp" className="hidden" onChange={(ev) => { const f = ev.target.files?.[0]; if (f) void upload(f); ev.target.value = ""; }} />
-          </label>
+          </label>}
           {e.bannerUrl && <Button size="sm" variant="ghost" icon={<Trash2 className="size-4" />} onClick={async () => { await run("rm", () => api(`/organizer/events/${e.id}/banner`, { method: "DELETE" }), "Banner removed"); onChange({ ...e, bannerUrl: null }); }}>Remove</Button>}
         </div>
         <p className="mt-2 text-xs text-text-2">Without a banner, attendees see a photo for the event category. Landscape 16:9 works best.</p>
@@ -199,7 +214,7 @@ export function QrTab({ e, onChange }: { e: OrgEventDetail; onChange: (d: OrgEve
   );
 }
 
-type ParticipantRow = { id: string; status: string; discoveryPaused: boolean; joinedAt: string; removalReason: string | null; displayName: string; username: string; profession: string | null; thumbnailUrl: string | null; availability: string | null };
+export type ParticipantRow = { id: string; status: string; discoveryPaused: boolean; joinedAt: string; removalReason: string | null; displayName: string; username: string; profession: string | null; thumbnailUrl: string | null; availability: string | null };
 
 export function ParticipantsTab({ eventId }: { eventId: string }) {
   const { busy, run } = useAction();
@@ -208,7 +223,7 @@ export function ParticipantsTab({ eventId }: { eventId: string }) {
   const [removeId, setRemoveId] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const dq = useDebounced(q);
-  const stats = useQuery({ queryKey: ["p-stats", eventId], queryFn: () => api<Record<string, number>>(`/organizer/events/${eventId}/participants/stats`) });
+  const stats = useQuery({ queryKey: ["p-stats", eventId], queryFn: () => api<Record<string, number | null> & { detailed?: boolean }>(`/organizer/events/${eventId}/participants/stats`) });
   const list = useQuery({ queryKey: ["participants", eventId, dq, status], queryFn: () => api<{ items: ParticipantRow[] }>(`/organizer/events/${eventId}/participants?q=${encodeURIComponent(dq)}&status=${status}`) });
   const refresh = () => { list.refetch(); stats.refetch(); };
   const toast = useToast();
@@ -220,6 +235,7 @@ export function ParticipantsTab({ eventId }: { eventId: string }) {
           <div key={k} className="card p-4"><p className="text-xs text-text-2">{l}</p><p className="mt-1 font-display text-2xl font-bold">{stats.data?.[k!] ?? "–"}</p></div>
         ))}
       </div>
+      {stats.data?.detailed === false && <UpgradeHint title="Detailed participant statistics">See who joined in the last 24 hours, paused discovery and connections made.</UpgradeHint>}
       <div className="flex flex-wrap gap-2">
         <div className="relative min-w-60 flex-1"><Search className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-text-2" /><Input className="pl-10" placeholder="Search name or @username" value={q} onChange={(e) => setQ(e.target.value)} /></div>
         <Tabs value={status} onChange={setStatus} items={[{ value: "active", label: "Active" }, { value: "left", label: "Left" }, { value: "removed", label: "Removed" }]} />
@@ -258,7 +274,7 @@ export function ParticipantsTab({ eventId }: { eventId: string }) {
   );
 }
 
-const TOGGLES: [string, string, string][] = [
+export const TOGGLES: [string, string, string][] = [
   ["discoverEnabled", "Discover", "Attendees can browse each other."], ["anonymousBrowsingEnabled", "Anonymous browsing", "Visitors without a profile can browse opted-in public profiles."],
   ["smartMatchingEnabled", "Smart Matching", "Personalized recommendations."], ["pulseEnabled", "Event Pulse", "Live aggregate activity."],
   ["connectionsEnabled", "Connection requests", "New requests through this event."], ["messagingEnabled", "Messaging", "New conversations through this event (existing ones always continue)."],
@@ -270,6 +286,7 @@ export function NetworkingTab({ e, onChange }: { e: OrgEventDetail; onChange: (d
   const [interests, setInterests] = useState<PickedTag[]>(e.suggestions.interests);
   const [skills, setSkills] = useState<PickedTag[]>(e.suggestions.skills);
   const [intents, setIntents] = useState<string[]>(e.suggestions.intentionIds);
+  const advanced = useOrgFeature("org.networking.advanced").has;
   const set = async (k: string, v: boolean) => { const d = await run(k, () => api<OrgEventDetail>(`/organizer/events/${e.id}/networking-settings`, { method: "PUT", body: { [k]: v } })); if (d) onChange(d); };
   return (
     <div className="grid gap-5 lg:grid-cols-2">
@@ -281,6 +298,7 @@ export function NetworkingTab({ e, onChange }: { e: OrgEventDetail; onChange: (d
       <section className="card space-y-5 p-5">
         <h2 className="font-display font-semibold">Suggestions for attendees</h2>
         <p className="text-sm text-text-2">Shown first when attendees pick interests and skills. Leave empty to use the {e.categoryName.toLowerCase()} defaults.</p>
+        {advanced === false ? <UpgradeHint title="Custom suggestions">Pick the interests, skills and networking goals attendees see first. Until then, the {e.categoryName.toLowerCase()} defaults are used.</UpgradeHint> : <>
         <div><p className="mb-2 text-sm font-medium">Interests</p><TagPicker kind="interests" value={interests} onChange={(v) => setInterests(v.filter((t) => t.id))} max={30} /></div>
         <div><p className="mb-2 text-sm font-medium">Skills</p><TagPicker kind="skills" value={skills} onChange={(v) => setSkills(v.filter((t) => t.id))} max={30} /></div>
         <div>
@@ -291,6 +309,7 @@ export function NetworkingTab({ e, onChange }: { e: OrgEventDetail; onChange: (d
           </div>
         </div>
         <Button loading={busy === "sugg"} onClick={async () => { const d = await run("sugg", () => api<OrgEventDetail>(`/organizer/events/${e.id}/suggestions`, { method: "PUT", body: { interestIds: interests.map((t) => t.id), skillIds: skills.map((t) => t.id), intentionIds: intents } }), "Suggestions saved"); if (d) onChange(d); }}>Save suggestions</Button>
+        </>}
       </section>
     </div>
   );
@@ -333,10 +352,10 @@ function PulseTab({ eventId }: { eventId: string }) {
           <div key={l as string} className="card p-4"><p className="text-sm text-text-2">{l}</p><p className="mt-1 font-display text-3xl font-bold">{v(n as number | null)}</p></div>
         ))}
       </div>
-      <div className="grid gap-5 lg:grid-cols-2">
+      {(p as Pulse & { advanced?: boolean }).advanced === false ? <UpgradeHint title="Advanced Event Pulse">See which networking goals, interests and skills are most common at this event.</UpgradeHint> : <div className="grid gap-5 lg:grid-cols-2">
         <section className="card p-5"><h2 className="font-display font-semibold">Goals</h2><ul className="mt-3 space-y-1 text-sm">{p.byIntention.length ? p.byIntention.map((i) => <li key={i.id} className="flex justify-between"><span>{i.label}</span><span>{i.count}</span></li>) : <li className="text-text-2">Not enough people yet.</li>}</ul></section>
         <section className="card p-5"><h2 className="font-display font-semibold">Top interests</h2><ul className="mt-3 space-y-1 text-sm">{p.topInterests.length ? p.topInterests.map((i) => <li key={i.name} className="flex justify-between"><span>{i.name}</span><span>{i.count}</span></li>) : <li className="text-text-2">Not enough people yet.</li>}</ul></section>
-      </div>
+      </div>}
       <p className="text-xs text-text-2">Aggregates only; groups smaller than {p.threshold} are hidden to protect attendees.</p>
     </div>
   );

@@ -11,26 +11,11 @@ import { PageHeader, Tabs } from "@/components/ui/Overlay";
 import { useToast } from "@/components/Providers";
 import { api, ApiError } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
+import { loadRazorpay } from "@/lib/razorpay";
 import type { Plan } from "@/lib/types";
 
 const FREE = ["Create your profile", "Join unlimited events", "Discover people", "Basic Smart Matching", "Event Pulse", "Open to Talk", "Connection requests", "Private messaging", "Privacy controls"];
 const PREMIUM = ["Everything in Free", "Detailed compatibility insights", "Advanced discovery filters (company, location)", "See who saved your profile", "Profile highlight badge", "Networking analytics"];
-
-type RazorpayInstance = { open: () => void; on: (event: string, cb: (r: { error?: { description?: string } }) => void) => void };
-declare global { interface Window { Razorpay?: new (options: Record<string, unknown>) => RazorpayInstance } }
-
-/** Loads Razorpay Checkout.js once, on demand (only when the user actually upgrades). */
-function loadRazorpay(): Promise<void> {
-  if (window.Razorpay) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    const existing = document.querySelector<HTMLScriptElement>("script[data-razorpay]");
-    const s = existing ?? Object.assign(document.createElement("script"), { src: "https://checkout.razorpay.com/v1/checkout.js", async: true });
-    s.dataset.razorpay = "1";
-    s.addEventListener("load", () => resolve(), { once: true });
-    s.addEventListener("error", () => reject(new Error("load")), { once: true });
-    if (!existing) document.body.appendChild(s);
-  });
-}
 
 type Billing = { planCode: string; planName: string; paymentsEnabled: boolean; subscription: { status: string; planName: string; currentPeriodEnd: string | null; cancelAtPeriodEnd: boolean } | null;
   promotion: { planName: string; endsAt: string } | null; payments: { id: string; amountMinor: number; currency: string; status: string; createdAt: string }[] };

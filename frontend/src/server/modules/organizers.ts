@@ -10,7 +10,7 @@ import { reply } from "@/server/core/http";
 import { audit } from "@/server/core/platform";
 import { removeMedia, saveSquareImage } from "@/server/core/media";
 import { cleanText, generateRecoveryCode, hashRecoveryCode, newToken, normalizeHttpsUrl, normalizeRecoveryCode, sha256, slugify, userAgentSummary, verifyRecoveryCode } from "@/server/lib/rules";
-import { orgHasFeature } from "./billing";
+import { orgEntitlements, requireOrgFeature } from "./entitlements";
 import QRCode from "qrcode";
 import { decryptSecret, encryptSecret, newTotpSecret, otpauthUrl, verifyTotp } from "@/server/lib/totp";
 
@@ -400,6 +400,84 @@ export async function dashboard(ctx: Ctx) {
   return {
     totals: { events: t?.total ?? 0, activeEvents: t?.active ?? 0, participants: t?.participants ?? 0, openToTalkNow: t && t.open >= 5 ? t.open : null },
     recentEvents: recent.map((e) => ({ id: e.id, name: e.name, status: e.status, startsAt: e.startsAt, endsAt: e.endsAt, timeZone: e.timeZone, participantCount: e.participantCount, bannerUrl: e.bannerUrl })),
-    plan: { pro: await orgHasFeature(ctx.db, orgId, "org.pulse.advanced") },
+    plan: await (async () => { const e = await orgEntitlements(ctx.db, orgId); return { tier: e.tier, name: e.planName, pro: e.tier !== "starter", allowance: e.allowance }; })(),
   };
+}
+
+// ---------- Members (Business: multiple organization members) ----------
+const MAX_MEMBERS = 25;
+
+export async function listMembers(ctx: Ctx) {
+  const { role, organizer } = await requireOrgMember(ctx, ctx.params.orgId!);
+  const rows = await ctx.db.select({ userId: organizerUsers.id, displayName: organizerUsers.displayName, email: organizerUsers.email, role: organizationMembers.role, joinedAt: organizationMembers.createdAt })
+    .from(organizationMembers).innerJoin(organizerUsers, eq(organizerUsers.id, organizationMembers.organizerUserId))
+    .where(eq(organizationMembers.organizationId, ctx.params.orgId!)).orderBy(sql`${organizationMembers.role} = 'member'`, organizationMembers.createdAt);
+  const ent = await orgEntitlements(ctx.db, ctx.params.orgId!);
+  return { myRole: role, canInvite: role === "owner" && ent.features.includes("org.members"), membersFeature: ent.features.includes("org.members"), limit: MAX_MEMBERS,
+    members: rows.map((r) => ({ ...r, isMe: r.userId === organizer.userId })) };
+}
+
+/** Adds an existing QRious organizer account to the organization (owner only, Business plan). */
+export async function addMember(ctx: Ctx) {
+  const orgId = ctx.params.orgId!;
+  const { organizer } = await requireOrgMember(ctx, orgId, true);
+  await requireOrgFeature(ctx.db, orgId, "org.members");
+  await ctx.limit("org-member-add", 30, 3600, organizer.userId);
+  const b = await ctx.json<{ email?: string }>();
+  const email = normEmail(b.email);
+  if (!EMAIL_RE.test(email)) throw new AppError(400, "validation_failed", "One or more fields are invalid.", { email: ["Enter a valid email."] });
+  const [user] = await ctx.db.select({ id: organizerUsers.id, status: organizerUsers.status }).from(organizerUsers).where(eq(organizerUsers.emailNormalized, email)).limit(1);
+  if (!user || user.status !== "active") throw new AppError(400, "validation_failed", "One or more fields are invalid.", { email: ["No active QRious organizer account uses this email. Ask them to sign up first."] });
+  await ctx.db.transaction(async (tx) => {
+    await tx.select({ id: organizations.id }).from(organizations).where(eq(organizations.id, orgId)).for("update");
+    const [{ n }] = (await tx.execute<{ n: number }>(sql`SELECT count(*)::int AS n FROM organization_members WHERE organization_id = ${orgId}`)).rows as [{ n: number }];
+    if (n >= MAX_MEMBERS) throw conflict("member_limit", `Organizations can have up to ${MAX_MEMBERS} members.`);
+    if ((await myOrganizations(tx, user.id)).length >= 5) throw conflict("too_many_organizations", "That person already belongs to 5 organizations.");
+    const r = await tx.insert(organizationMembers).values({ organizationId: orgId, organizerUserId: user.id, role: "member" }).onConflictDoNothing().returning({ id: organizationMembers.organizerUserId });
+    if (!r.length) throw conflict("already_member", "That person is already a member.");
+    await audit(tx, { actorType: "organizer", actorId: organizer.userId, action: "organization.member_added", targetType: "organizer", targetId: user.id, organizationId: orgId });
+  });
+  return reply(201, { ok: true });
+}
+
+/** Owners remove members; members may leave. Allowed on every plan so a downgraded organization can tidy up. */
+export async function removeMember(ctx: Ctx) {
+  const orgId = ctx.params.orgId!;
+  const { organizer, role } = await requireOrgMember(ctx, orgId);
+  const target = ctx.params.userId!;
+  if (target !== organizer.userId && role !== "owner") throw forbidden("Only the organization owner can remove members.");
+  const [m] = await ctx.db.select({ role: organizationMembers.role }).from(organizationMembers).where(and(eq(organizationMembers.organizationId, orgId), eq(organizationMembers.organizerUserId, target))).limit(1);
+  if (!m) throw notFound("Member not found.");
+  if (m.role === "owner") throw conflict("owner_required", "The owner can't be removed or leave the organization.");
+  await ctx.db.delete(organizationMembers).where(and(eq(organizationMembers.organizationId, orgId), eq(organizationMembers.organizerUserId, target)));
+  await audit(ctx.db, { actorType: "organizer", actorId: organizer.userId, action: target === organizer.userId ? "organization.member_left" : "organization.member_removed", targetType: "organizer", targetId: target, organizationId: orgId });
+  return reply(204);
+}
+
+// ---------- Cross-event analytics & organization report (Business) ----------
+export async function orgAnalytics(ctx: Ctx) {
+  const orgId = ctx.params.orgId!;
+  const { organizer } = await requireOrgMember(ctx, orgId);
+  await requireOrgFeature(ctx.db, orgId, "org.analytics.cross_event");
+  const rows = (await ctx.db.execute<{ id: string; name: string; status: string; starts_at: Date; active: number; joined: number; connections: number; conversations: number }>(sql`
+    SELECT e.id, e.name, e.status, e.starts_at, e.participant_count AS active,
+      (SELECT count(*)::int FROM event_participants ep WHERE ep.event_id = e.id) AS joined,
+      (SELECT count(*)::int FROM connections c WHERE c.origin_event_id = e.id AND c.status = 'accepted') AS connections,
+      (SELECT count(*)::int FROM conversations cv WHERE cv.origin_event_id = e.id) AS conversations
+    FROM events e WHERE e.organization_id = ${orgId} AND e.status <> 'draft' ORDER BY e.starts_at DESC LIMIT 200`)).rows;
+  const [u] = (await ctx.db.execute<{ unique_people: number; returning_people: number }>(sql`
+    SELECT count(*)::int AS unique_people, count(*) FILTER (WHERE n > 1)::int AS returning_people FROM (
+      SELECT ep.attendee_id, count(DISTINCT ep.event_id) AS n FROM event_participants ep JOIN events e ON e.id = ep.event_id
+      WHERE e.organization_id = ${orgId} GROUP BY ep.attendee_id) x`)).rows;
+  const events = rows.map((r) => ({ id: r.id, name: r.name, status: r.status, startsAt: r.starts_at, activeParticipants: r.active, joined: r.joined, connections: r.connections, conversations: r.conversations }));
+  const sum = (k: "joined" | "connections" | "conversations") => events.reduce((a, e) => a + e[k], 0);
+  const totals = { events: events.length, joined: sum("joined"), connections: sum("connections"), conversations: sum("conversations"), uniquePeople: u?.unique_people ?? 0, returningPeople: u?.returning_people ?? 0 };
+  if (ctx.query("format") === "csv") {
+    const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""').replace(/^[=+\-@]/, "'$&")}"`;
+    const csv = ["Event,Status,Starts at,Joined,Active participants,Connections,Conversations",
+      ...events.map((e) => [e.name, e.status, new Date(e.startsAt).toISOString(), e.joined, e.activeParticipants, e.connections, e.conversations].map(esc).join(","))].join("\r\n");
+    await audit(ctx.db, { actorType: "organizer", actorId: organizer.userId, action: "organization.report_exported", targetType: "organization", targetId: orgId, organizationId: orgId, data: { rows: events.length } });
+    return new Response(csv, { headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="organization-report.csv"`, "Cache-Control": "no-store" } });
+  }
+  return { totals, events };
 }

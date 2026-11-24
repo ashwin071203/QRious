@@ -12,15 +12,19 @@ import { EVENT_STATUS } from "@/components/EventStatus";
 import { CreateOrganization } from "@/components/CreateOrganization";
 import { api } from "@/lib/api";
 import { formatEventDate } from "@/lib/format";
+import { useOrgBilling } from "@/lib/queries";
 import type { OrgEventRow } from "@/lib/types";
 
 function EventsList() {
   const { orgId, me } = useOrg();
   const q = useQuery({ queryKey: ["org-events", orgId], enabled: !!orgId, queryFn: () => api<OrgEventRow[]>(`/organizations/${orgId}/events`) });
+  const a = useOrgBilling(orgId).data?.allowance;
+  const allowanceText = !a ? null : a.unlimited ? "Unlimited events with your plan." : a.freeRemaining > 0 ? `${a.freeRemaining} of ${a.freeLimit} free events left.`
+    : a.credits > 0 ? `${a.credits} Single Event credit${a.credits === 1 ? "" : "s"} left.` : "Free events used — upgrade or buy a Single Event to create more.";
   if (!me.organizations?.length) return <CreateOrganization />;
   return (
     <>
-      <PageHeader title="Events" subtitle="Create, publish and manage your events." actions={<ButtonLink href="/organizer/events/new" icon={<CalendarPlus className="size-4" />}>New event</ButtonLink>} />
+      <PageHeader title="Events" subtitle={<>Create, publish and manage your events.{allowanceText && <> <Link href="/organizer/billing" className="text-accent-light hover:underline">{allowanceText}</Link></>}</>} actions={<ButtonLink href="/organizer/events/new" icon={<CalendarPlus className="size-4" />}>New event</ButtonLink>} />
       {q.isError ? <ErrorState error={q.error} onRetry={() => q.refetch()} /> : q.isLoading ? <Skeleton className="h-48" /> : !q.data?.length ? (
         <div className="card"><EmptyState icon={<QrCode className="size-7" />} title="No events yet" action={<ButtonLink href="/organizer/events/new">Create an event</ButtonLink>}>Create an event to get its QR code.</EmptyState></div>
       ) : (

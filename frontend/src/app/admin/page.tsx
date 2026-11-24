@@ -202,13 +202,9 @@ function Categories() {
   );
 }
 
-type BillingData = { paymentsEnabled: boolean; revenue: Record<string, number>; subscriptions: Record<string, number> | null; conversionRate: number; monthly: { month: string; revenue_minor: number }[];
-  popularPlans: { name: string; n: number }[]; promotions: { id: string; plan: string; subject: string | null; startsAt: string; endsAt: string; revokedAt: string | null; reason: string | null }[];
-  plans: { code: string; name: string; audience: string; priceMinor: number; isActive: boolean }[] };
-
 type Gateway = { mode: "off" | "test" | "live" | "invalid"; enabled: boolean; keyIdSet: boolean; keySecretSet: boolean; webhookSecretSet: boolean; keysValid: boolean | null; subscriptionsEnabled: boolean | null;
   webhookUrl: string; webhookEvents: string[]; lastWebhook: { at: string; type: string } | null;
-  plans: { code: string; name: string; billingPeriod: string; priceMinor: number; currency: string; isActive: boolean; gatewayPlanId: string | null }[] };
+  plans: { code: string; audience: string; name: string; billingPeriod: string; priceMinor: number; currency: string; isActive: boolean; gatewayPlanId: string | null }[] };
 
 function Check({ ok, label, detail }: { ok: boolean | null; label: string; detail?: string }) {
   return (
@@ -253,7 +249,7 @@ function PaymentsSetup() {
         <Check ok={g.subscriptionsEnabled} label="Subscriptions enabled on the Razorpay account" detail={g.subscriptionsEnabled === false ? "Razorpay Dashboard (Test Mode) → Subscriptions → enable / Get started, then reload this page." : undefined} />
         <Check ok={g.webhookSecretSet} label="RAZORPAY_WEBHOOK_SECRET is set" />
         <Check ok={!!g.lastWebhook} label="Webhook received" detail={g.lastWebhook ? `${g.lastWebhook.type} · ${relativeTime(g.lastWebhook.at)}` : "Appears after your first test payment"} />
-        <Check ok={g.plans.every((p) => !!p.gatewayPlanId)} label="Premium plans linked to Razorpay plans" />
+        <Check ok={g.plans.every((p) => !!p.gatewayPlanId)} label="Subscription plans linked to Razorpay plans (Premium, Pro, Business)" detail="Single Event packages use Razorpay Orders and need no plan." />
       </ul>
 
       <div>
@@ -262,7 +258,7 @@ function PaymentsSetup() {
           {g.plans.map((p) => (
             <li key={p.code} className="rounded-xl bg-bg-2 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span>{p.name} · {inr(p.priceMinor)} / {p.billingPeriod}</span>
+                <span>{p.name} <span className="text-text-2">({p.audience === "organization" ? "organizer" : "attendee"})</span> · {inr(p.priceMinor)} / {p.billingPeriod}</span>
                 {p.gatewayPlanId ? <code className="font-mono text-xs text-success">{p.gatewayPlanId}</code>
                   : <Button size="sm" disabled={g.mode !== "test" || !g.keysValid || g.subscriptionsEnabled === false} loading={busy === p.code}
                       onClick={() => run(p.code, () => api(`/admin/payments/plans/${p.code}/create`, { method: "POST" }), "Created in Razorpay (test mode)", () => q.refetch())}>Create in Razorpay (test)</Button>}
@@ -292,33 +288,116 @@ function PaymentsSetup() {
   );
 }
 
+type OrgBillingRow = { id: string; name: string; status: string; tier: string; planName: string; tierSource: string | null; tierUntil: string | null; eventsCreated: number; freeUsed: number; freeRemaining: number;
+  creditsAvailable: number; creditsUsed: number; revenueMinor: number; subscription: { status: string; plan: string | null; periodEnd: string | null; cancelAtPeriodEnd: boolean } | null };
+type OrganizerBilling = { totals: Record<string, number>; organizations: OrgBillingRow[];
+  payments: { id: string; organization: string; purpose: string; plan: string | null; amountMinor: number; refundedMinor: number; status: string; createdAt: string }[] };
+type BillingData = { paymentsEnabled: boolean; revenue: Record<string, number>; subscriptions: Record<string, number> | null; conversionRate: number; monthly: { month: string; revenue_minor: number }[];
+  popularPlans: { name: string; n: number }[]; promotions: { id: string; plan: string; subject: string | null; startsAt: string; endsAt: string; revokedAt: string | null; reason: string | null }[];
+  plans: { code: string; name: string; audience: string; priceMinor: number; isActive: boolean; isDefault: boolean; billingPeriod: string }[];
+  organizers: OrganizerBilling;
+  eventCreditGrants: { id: string; organization: string; reason: string | null; createdAt: string; consumedAt: string | null; revokedAt: string | null }[] };
+
+const SUB_LABEL: Record<string, string> = { active: "Active", authenticated: "Starting", pending: "Retrying", halted: "Halted", cancelled: "Cancelled", completed: "Completed", expired: "Expired" };
+
 function Billing() {
   const { busy, run } = useRun();
   const q = useQuery({ queryKey: ["admin-billing"], queryFn: () => api<BillingData>("/admin/billing") });
-  const [promo, setPromo] = useState({ username: "", planCode: "attendee_premium_monthly", days: "30", reason: "", organizationId: "" });
+  const [promo, setPromo] = useState({ username: "", planCode: "attendee_premium_monthly", days: "30", credits: "1", reason: "", organizationId: "" });
+  const [orgFilter, setOrgFilter] = useState("");
   if (!q.data) return <Skeleton className="h-60" />;
   const d = q.data;
-  const isOrgPlan = d.plans.find((p) => p.code === promo.planCode)?.audience === "organization";
+  const plan = d.plans.find((p) => p.code === promo.planCode);
+  const isOrgPlan = plan?.audience === "organization";
+  const isCredits = plan?.billingPeriod === "one_time";
+  const o = d.organizers;
+  const orgs = orgFilter.trim() ? o.organizations.filter((x) => x.name.toLowerCase().includes(orgFilter.trim().toLowerCase())) : o.organizations;
+  const grant = () => run("promo", () => api("/admin/promotional-access", { method: "POST", body: isCredits
+    ? { planCode: promo.planCode, organizationId: promo.organizationId, credits: Number(promo.credits), reason: promo.reason }
+    : { ...promo, days: Number(promo.days), credits: undefined } }), isCredits ? "Event credits granted" : "Access granted", () => q.refetch());
+
   return (
     <div className="space-y-5">
       <PaymentsSetup />
+      <h2 className="font-display text-lg font-semibold">All revenue</h2>
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {[["Total revenue (net)", inr(d.revenue.revenue_minor!)], ["MRR", inr(d.revenue.mrrMinor!)], ["ARR", inr(d.revenue.arrMinor!)], ["Failed payments", d.revenue.failed_payments],
           ["Active subscriptions", d.subscriptions?.active ?? 0], ["Cancelled", d.subscriptions?.cancelled ?? 0], ["Premium attendees", d.subscriptions?.premium_attendees ?? 0], ["Conversion", `${d.conversionRate}%`]]
           .map(([l, v]) => <div key={l as string} className="card p-4"><p className="text-xs text-text-2">{l}</p><p className="mt-1 font-display text-2xl font-bold">{v}</p></div>)}
       </div>
+
+      <h2 className="pt-2 font-display text-lg font-semibold">Organizers</h2>
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+        {[["Organizer revenue (net)", inr(o.totals.revenue_minor!)], ["Pro (live)", o.totals.pro_active ?? 0], ["Business (live)", o.totals.business_active ?? 0],
+          ["Single Events sold", `${o.totals.event_purchases ?? 0} · ${inr(o.totals.event_revenue_minor!)}`], ["Ended subscriptions", o.totals.ended ?? 0]]
+          .map(([l, v]) => <div key={l as string} className="card p-4"><p className="text-xs text-text-2">{l}</p><p className="mt-1 font-display text-xl font-bold">{v}</p></div>)}
+      </div>
+      <section className="card p-0">
+        <div className="flex flex-wrap items-center justify-between gap-3 px-5 pt-5">
+          <h3 className="font-display font-semibold">Organization plans & free events</h3>
+          <Input className="h-10 max-w-xs" placeholder="Filter organizations" aria-label="Filter organizations" value={orgFilter} onChange={(e) => setOrgFilter(e.target.value)} />
+        </div>
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full min-w-[820px] text-sm">
+            <thead className="border-y border-line text-left text-text-2"><tr>
+              <th className="px-5 py-2.5 font-medium">Organization</th><th className="px-4 py-2.5 font-medium">Plan</th><th className="px-4 py-2.5 font-medium">Subscription</th>
+              <th className="px-4 py-2.5 font-medium">Free events</th><th className="px-4 py-2.5 font-medium">Event credits</th><th className="px-4 py-2.5 font-medium">Events created</th><th className="px-5 py-2.5 text-right font-medium">Revenue</th>
+            </tr></thead>
+            <tbody className="divide-y divide-line">
+              {orgs.map((x) => (
+                <tr key={x.id}>
+                  <td className="px-5 py-2.5"><p className="font-medium">{x.name}</p>{x.status !== "active" && <p className="text-xs text-error">{x.status}</p>}</td>
+                  <td className="px-4 py-2.5">{x.planName}{x.tierSource === "promo" && <span className="ml-1 text-xs text-accent-light">(promo{x.tierUntil ? ` until ${formatDateTime(x.tierUntil)}` : ""})</span>}</td>
+                  <td className="px-4 py-2.5 text-text-2">{x.subscription ? `${x.subscription.plan} · ${SUB_LABEL[x.subscription.status] ?? x.subscription.status}${x.subscription.periodEnd ? ` · ${x.subscription.cancelAtPeriodEnd ? "ends" : "renews"} ${formatDateTime(x.subscription.periodEnd)}` : ""}` : "—"}</td>
+                  <td className="px-4 py-2.5 tabular-nums">{x.freeUsed}/3 used <span className="text-text-2">({x.freeRemaining} left)</span></td>
+                  <td className="px-4 py-2.5 tabular-nums">{x.creditsAvailable} left · {x.creditsUsed} used</td>
+                  <td className="px-4 py-2.5 tabular-nums">{x.eventsCreated}</td>
+                  <td className="px-5 py-2.5 text-right tabular-nums">{inr(x.revenueMinor)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!orgs.length && <p className="px-5 py-4 text-sm text-text-2">No organizations.</p>}
+        </div>
+      </section>
+      <section className="card p-5 text-sm">
+        <h3 className="font-display font-semibold">Organizer payments</h3>
+        {o.payments.length ? <ul className="mt-2 divide-y divide-line">{o.payments.map((p) => (
+          <li key={p.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
+            <span>{p.organization} · {p.plan ?? (p.purpose === "event_credit" ? "Single Event" : "Subscription")} · {formatDateTime(p.createdAt)}</span>
+            <span className={p.status === "failed" ? "text-error" : p.status === "captured" ? "text-success" : "text-text-2"}>{inr(p.amountMinor)} · {p.status.replace("_", " ")}{p.refundedMinor ? ` (${inr(p.refundedMinor)} refunded)` : ""}</span>
+          </li>))}</ul> : <p className="mt-2 text-text-2">No organizer payments yet.</p>}
+      </section>
+
       <section className="card p-5">
         <h2 className="font-display font-semibold">Grant promotional access</h2>
-        <div className="mt-3 grid gap-3 sm:grid-cols-4">
-          <Select className="h-12" value={promo.planCode} onChange={(e) => setPromo({ ...promo, planCode: e.target.value })}>{d.plans.filter((p) => p.priceMinor > 0).map((p) => <option key={p.code} value={p.code}>{p.name} ({p.audience})</option>)}</Select>
-          {isOrgPlan ? <Input placeholder="Organization ID" value={promo.organizationId} onChange={(e) => setPromo({ ...promo, organizationId: e.target.value })} />
-            : <Input placeholder="@username" value={promo.username} onChange={(e) => setPromo({ ...promo, username: e.target.value })} />}
-          <Input placeholder="Days" inputMode="numeric" value={promo.days} onChange={(e) => setPromo({ ...promo, days: e.target.value })} />
-          <Button loading={busy === "promo"} onClick={() => run("promo", () => api("/admin/promotional-access", { method: "POST", body: { ...promo, days: Number(promo.days) } }), "Access granted", () => q.refetch())}>Grant</Button>
+        <p className="mt-1 text-sm text-text-2">Recorded in the audit log. Promotions end automatically; revoking takes effect immediately and never deletes data.</p>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <Select className="h-12" aria-label="Plan" value={promo.planCode} onChange={(e) => setPromo({ ...promo, planCode: e.target.value })}>
+            {d.plans.filter((p) => p.priceMinor > 0 && p.isActive).map((p) => <option key={p.code} value={p.code}>{p.name} ({p.audience === "organization" ? "organizer" : "attendee"})</option>)}
+          </Select>
+          {isOrgPlan
+            ? <Select className="h-12" aria-label="Organization" value={promo.organizationId} onChange={(e) => setPromo({ ...promo, organizationId: e.target.value })}>
+                <option value="">Choose organization…</option>{o.organizations.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+              </Select>
+            : <Input placeholder="@username" aria-label="Attendee username" value={promo.username} onChange={(e) => setPromo({ ...promo, username: e.target.value })} />}
+          {isCredits
+            ? <Input placeholder="Events (1–20)" aria-label="Number of events" inputMode="numeric" value={promo.credits} onChange={(e) => setPromo({ ...promo, credits: e.target.value })} />
+            : <Input placeholder="Days" aria-label="Days" inputMode="numeric" value={promo.days} onChange={(e) => setPromo({ ...promo, days: e.target.value })} />}
+          <Input placeholder="Reason (optional)" aria-label="Reason" value={promo.reason} maxLength={500} onChange={(e) => setPromo({ ...promo, reason: e.target.value })} />
+          <Button loading={busy === "promo"} disabled={isOrgPlan && !promo.organizationId} onClick={grant}>Grant</Button>
         </div>
         {d.promotions.length > 0 && <ul className="mt-4 divide-y divide-line text-sm">{d.promotions.map((p) => (
-          <li key={p.id} className="flex items-center justify-between gap-2 py-2"><span>{p.subject} · {p.plan} · until {formatDateTime(p.endsAt)}{p.revokedAt ? " · revoked" : ""}</span>
+          <li key={p.id} className="flex items-center justify-between gap-2 py-2"><span>{p.subject} · {p.plan} · until {formatDateTime(p.endsAt)}{p.revokedAt ? " · revoked" : ""}{p.reason ? ` · ${p.reason}` : ""}</span>
             {!p.revokedAt && <Button size="sm" variant="ghost" loading={busy === p.id} onClick={() => run(p.id, () => api(`/admin/promotional-access/${p.id}/revoke`, { method: "POST" }), "Revoked", () => q.refetch())}>Revoke</Button>}</li>))}</ul>}
+        {d.eventCreditGrants.length > 0 && <>
+          <h3 className="mt-5 text-sm font-semibold">Promotional event credits</h3>
+          <ul className="mt-1 divide-y divide-line text-sm">{d.eventCreditGrants.map((g) => (
+            <li key={g.id} className="flex items-center justify-between gap-2 py-2">
+              <span>{g.organization} · granted {formatDateTime(g.createdAt)}{g.reason ? ` · ${g.reason}` : ""} · {g.consumedAt ? "used" : g.revokedAt ? "revoked" : "available"}</span>
+              {!g.consumedAt && !g.revokedAt && <Button size="sm" variant="ghost" loading={busy === g.id} onClick={() => run(g.id, () => api(`/admin/event-credits/${g.id}/revoke`, { method: "POST" }), "Credit revoked", () => q.refetch())}>Revoke</Button>}
+            </li>))}</ul>
+        </>}
       </section>
       <section className="card p-5 text-sm">
         <h2 className="font-display font-semibold">Monthly revenue</h2>

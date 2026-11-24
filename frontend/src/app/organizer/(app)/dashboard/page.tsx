@@ -12,6 +12,7 @@ import { ErrorState, PageHeader } from "@/components/ui/Overlay";
 import { api } from "@/lib/api";
 import { formatEventDate } from "@/lib/format";
 import { EVENT_STATUS } from "@/components/EventStatus";
+import { OrgInsights } from "@/components/organizer/OrgInsights";
 
 type Dashboard = { totals: { events: number; activeEvents: number; participants: number; openToTalkNow: number | null };
   recentEvents: { id: string; name: string; status: string; startsAt: string; endsAt: string; timeZone: string; participantCount: number; bannerUrl: string | null }[] };
@@ -44,6 +45,7 @@ export default function DashboardPage() {
               </motion.div>
             ))}
           </div>
+          {orgId && <OrgInsights orgId={orgId} />}
           <h2 className="mt-8 mb-3 font-display text-lg font-semibold">Recent events</h2>
           {q.isLoading ? <Skeleton className="h-40" /> : !q.data?.recentEvents.length ? (
             <div className="card"><EmptyState icon={<QrCode className="size-7" />} title="Create your first event" action={<ButtonLink href="/organizer/events/new" icon={<CalendarPlus className="size-4" />}>New event</ButtonLink>}>

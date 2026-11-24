@@ -4,7 +4,7 @@ import { useEffect } from "react";
 import { useLocal, writeLocal } from "@/lib/client-store";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import type { ConversationItem, Entitlements, MyEvent, OrganizerMe, OwnProfile, SessionStatus, UnreadCounts } from "@/lib/types";
+import type { ConversationItem, Entitlements, MyEvent, OrgBilling, OrganizerMe, OwnProfile, SessionStatus, UnreadCounts } from "@/lib/types";
 
 export const keys = {
   session: ["session"] as const,
@@ -42,3 +42,7 @@ export const useLastEventId = () => useLocal(LAST_EVENT);
 export function useRememberEvent(eventId: string | undefined) {
   useEffect(() => rememberEvent(eventId), [eventId]);
 }
+
+/** Plan, entitlements and lifetime event allowance of an organization (server-enforced; the UI only mirrors it). */
+export const useOrgBilling = (orgId: string | null) =>
+  useQuery({ queryKey: ["org-billing", orgId], enabled: !!orgId, queryFn: () => api<OrgBilling>(`/organizations/${orgId}/billing`) });

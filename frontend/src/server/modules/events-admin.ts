@@ -12,9 +12,9 @@ import { requireOrgMember } from "./organizers";
 import { loadEvent, publicEventDto, syncStatuses, type EventFull } from "./events-core";
 import { intentionsForCategory } from "./taxonomy";
 import { computePulse } from "./pulse";
-import { orgHasFeature } from "./billing";
+import { allocateEventAllowance, orgHas, requireOrgFeature } from "./entitlements";
 
-const { events, eventCategories, eventQrCodes, eventNetworkingSettings, eventSuggestedInterests, eventSuggestedSkills, eventIntentions, eventParticipants,
+const { organizations, organizationEventCredits, events, eventCategories, eventQrCodes, eventNetworkingSettings, eventSuggestedInterests, eventSuggestedSkills, eventIntentions, eventParticipants,
   interests, skills, userReports, notifications } = schema;
 
 export function siteOrigin(ctx: Ctx) {
@@ -93,13 +93,21 @@ export async function createEvent(ctx: Ctx) {
     if (!c) errors.add("categoryId", "Choose a category.");
   }
   errors.throwIfAny();
+  // Validation happens first, and everything below is one transaction: a failed creation consumes no allowance.
   const id = await ctx.db.transaction(async (tx) => {
-    const [ev] = await tx.insert(events).values({ ...(f as typeof events.$inferInsert), organizationId: ctx.params.orgId!, createdBy: organizer.userId, status: "draft" }).returning({ id: events.id });
+    const allowance = await allocateEventAllowance(tx, ctx.params.orgId!); // locks the organization row
+    const [ev] = await tx.insert(events).values({ ...(f as typeof events.$inferInsert), organizationId: ctx.params.orgId!, createdBy: organizer.userId, status: "draft", allowanceSource: allowance.source }).returning({ id: events.id });
+    await tx.update(organizations).set({ eventsCreatedCount: sql`${organizations.eventsCreatedCount} + 1` }).where(eq(organizations.id, ctx.params.orgId!));
+    if (allowance.creditId) {
+      const used = await tx.update(organizationEventCredits).set({ consumedAt: new Date(), consumedEventId: ev!.id })
+        .where(and(eq(organizationEventCredits.id, allowance.creditId), sql`consumed_at IS NULL AND revoked_at IS NULL`)).returning({ id: organizationEventCredits.id });
+      if (!used.length) throw conflict("concurrent_change", "Your event credit changed in the meantime. Please try again.");
+    }
     await tx.insert(eventNetworkingSettings).values({ eventId: ev!.id, updatedBy: organizer.userId });
     // Event-type defaults: the category's intentions (organizers don't have to configure anything, M17).
     const defaults = await intentionsForCategory(tx, f.categoryId!);
     if (defaults.length) await tx.insert(eventIntentions).values(defaults.map((i, n) => ({ eventId: ev!.id, intentionId: i.id, sortOrder: n })));
-    await audit(tx, { actorType: "organizer", actorId: organizer.userId, action: "event.created", targetType: "event", targetId: ev!.id, organizationId: ctx.params.orgId, eventId: ev!.id });
+    await audit(tx, { actorType: "organizer", actorId: organizer.userId, action: "event.created", targetType: "event", targetId: ev!.id, organizationId: ctx.params.orgId, eventId: ev!.id, data: { allowance: allowance.source } });
     return ev!.id;
   });
   return reply(201, { id });
@@ -146,8 +154,22 @@ export async function updateEvent(ctx: Ctx) {
   return eventDetail(ctx, (await loadEvent(ctx.db, event.id))!);
 }
 
+/** Deletes a draft that was never published (no QR code, no participants). Allowance is NOT restored. */
+export async function deleteEvent(ctx: Ctx) {
+  const { event, organizer } = await ownedEvent(ctx);
+  if (event.status !== "draft" || event.publishedAt || event.participantCount > 0)
+    throw conflict("event_not_deletable", "Only drafts that were never published can be deleted. Archive other events instead.");
+  await ctx.db.transaction(async (tx) => {
+    const r = await tx.delete(events).where(and(eq(events.id, event.id), eq(events.status, "draft"), sql`published_at IS NULL`)).returning({ id: events.id });
+    if (!r.length) throw conflict("concurrent_change", "The event changed in the meantime. Refresh and try again.");
+    await audit(tx, { actorType: "organizer", actorId: organizer.userId, action: "event.deleted", targetType: "event", targetId: event.id, organizationId: event.organizationId, data: { name: event.name } });
+  });
+  return reply(204);
+}
+
 export async function uploadBanner(ctx: Ctx) {
   const { event } = await ownedEvent(ctx);
+  await requireOrgFeature(ctx.db, event.organizationId, "org.branding");
   const form = await ctx.req.formData().catch(() => null);
   const saved = await saveBanner((form?.get("file") as Blob | null) ?? null);
   await ctx.db.update(events).set({ bannerUrl: saved.url, bannerKey: saved.key, updatedAt: new Date() }).where(eq(events.id, event.id));
@@ -188,13 +210,6 @@ export async function transition(ctx: Ctx, action: Transition) {
 
   if (action === "publish") {
     if (event.endsAt <= now) throw conflict("event_in_past", "Move the end date into the future before publishing.");
-    const limit = (await import("./billing")).effectiveEntitlements;
-    const ent = await limit(ctx.db, { organizationId: event.organizationId });
-    const cap = ent.features.find((f) => f.featureKey === "org.events.active.limit")?.limit ?? null;
-    if (cap !== null) {
-      const [{ n }] = (await ctx.db.execute<{ n: number }>(sql`SELECT count(*)::int AS n FROM events WHERE organization_id = ${event.organizationId} AND status IN ('published','active','networking_paused')`)).rows as [{ n: number }];
-      if (n >= cap) throw new AppError(409, "entitlement_required", `Your plan allows ${cap} live event${cap === 1 ? "" : "s"} at a time.`);
-    }
     status = "published";
     Object.assign(patch, { status, publishedAt: now });
   }
@@ -250,6 +265,7 @@ export async function resetSettings(ctx: Ctx) {
 
 export async function updateSuggestions(ctx: Ctx) {
   const { event } = await ownedEvent(ctx);
+  await requireOrgFeature(ctx.db, event.organizationId, "org.networking.advanced");
   const b = await ctx.json<{ interestIds?: string[]; skillIds?: string[]; intentionIds?: string[] }>();
   const clean = (a: unknown, max: number) => (Array.isArray(a) ? [...new Set(a.filter(isUuid))].slice(0, max) : null);
   const iIds = clean(b.interestIds, 40), sIds = clean(b.skillIds, 40), nIds = clean(b.intentionIds, 20);
@@ -354,10 +370,13 @@ export async function participantStats(ctx: Ctx) {
       count(*) FILTER (WHERE status = 'removed')::int AS removed, count(*) FILTER (WHERE status = 'active' AND discovery_paused)::int AS paused,
       count(*) FILTER (WHERE joined_at > now() - interval '24 hours')::int AS today
     FROM event_participants WHERE event_id = ${event.id}`)).rows;
+  // Basic statistics on every plan; the detailed breakdown is Pro (`detailed: false` tells the UI to show the upgrade hint).
+  if (!(await orgHas(ctx.db, event.organizationId, "org.participants.detailed_stats")))
+    return { detailed: false, active: r!.active, left: r!.left, removed: r!.removed, paused: null, today: null, connections: null, conversations: null };
   const [c] = (await ctx.db.execute<{ connections: number; conversations: number }>(sql`SELECT
     (SELECT count(*)::int FROM connections WHERE origin_event_id = ${event.id} AND status = 'accepted') AS connections,
     (SELECT count(*)::int FROM conversations WHERE origin_event_id = ${event.id}) AS conversations`)).rows;
-  return { ...r, ...c };
+  return { detailed: true, ...r, ...c };
 }
 
 export async function removeParticipant(ctx: Ctx, restore = false) {
@@ -405,7 +424,7 @@ export async function escalateReport(ctx: Ctx) {
 /** CSV export of consenting participants only (BR-29, Pro feature). */
 export async function exportParticipants(ctx: Ctx) {
   const { event, organizer } = await ownedEvent(ctx);
-  if (!(await orgHasFeature(ctx.db, event.organizationId, "org.reports.export"))) throw new AppError(403, "entitlement_required", "Participant exports are part of the Pro plan.");
+  await requireOrgFeature(ctx.db, event.organizationId, "org.reports.export");
   const rows = (await ctx.db.execute<{ display_name: string; username: string; profession: string | null; joined_at: Date }>(sql`
     SELECT up.display_name, up.username, up.profession, ep.joined_at FROM event_participants ep JOIN user_profiles up ON up.attendee_id = ep.attendee_id
     JOIN attendees a ON a.id = ep.attendee_id AND a.status = 'active' WHERE ep.event_id = ${event.id} AND ep.status = 'active' AND ep.export_consent = true ORDER BY ep.joined_at`)).rows;
@@ -417,6 +436,9 @@ export async function exportParticipants(ctx: Ctx) {
 
 export async function organizerPulse(ctx: Ctx) {
   const { event } = await ownedEvent(ctx);
-  return computePulse(ctx.db, event);
+  const pulse = await computePulse(ctx.db, event);
+  // Basic Pulse (totals) on every plan; goal and interest breakdowns are Pro.
+  if (await orgHas(ctx.db, event.organizationId, "org.pulse.advanced")) return { ...pulse, advanced: true };
+  return { ...pulse, advanced: false, byIntention: [], topInterests: [], topSkills: [] };
 }
 

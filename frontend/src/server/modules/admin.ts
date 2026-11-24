@@ -9,10 +9,11 @@ import { removeMedia } from "@/server/core/media";
 import { cleanTag, slugify, validateTag } from "@/server/lib/rules";
 import { requireAdmin } from "./organizers";
 import { revokeAllSessions } from "./identity";
-import { grantPlan, revokeSource } from "./billing";
+import { EVENT_PACKAGE_CODE, adminOrganizerBilling, grantPlan, revokeSource } from "./billing";
+import { config } from "@/server/core/config";
 
 const { attendees, userProfiles, organizations, organizerUsers, organizerSessions, events, userReports, moderationActions, interests, skills, eventCategories,
-  subscriptionPlans, promotionalAccess, auditLogs, accountDeletionRequests, socialLinks, profileInterests, profileSkills, profileLookingForSkills, savedProfiles } = schema;
+  subscriptionPlans, promotionalAccess, organizationEventCredits, auditLogs, accountDeletionRequests, socialLinks, profileInterests, profileSkills, profileLookingForSkills, savedProfiles } = schema;
 
 const like = (q: string) => `%${q.trim().toLowerCase().replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 
@@ -289,22 +290,46 @@ export async function billingOverview(ctx: Ctx) {
     .leftJoin(userProfiles, eq(userProfiles.attendeeId, promotionalAccess.attendeeId)).leftJoin(organizations, eq(organizations.id, promotionalAccess.organizationId))
     .orderBy(desc(promotionalAccess.startsAt)).limit(100);
   return {
-    paymentsEnabled: !!process.env.RAZORPAY_KEY_ID,
+    paymentsEnabled: config.razorpay.enabled,
+    paymentsMode: config.razorpay.enabled ? config.razorpay.mode : "off",
     revenue: { ...r, mrrMinor: s?.mrr_minor ?? 0, arrMinor: (s?.mrr_minor ?? 0) * 12 },
     subscriptions: s, conversionRate: totalAttendees ? Math.round(((s?.premium_attendees ?? 0) / totalAttendees) * 1000) / 10 : 0,
     monthly, popularPlans: popular,
     promotions: promos.map((x) => ({ id: x.p.id, plan: x.plan, subject: x.profile ? `@${x.profile}` : x.org, startsAt: x.p.startsAt, endsAt: x.p.endsAt, revokedAt: x.p.revokedAt, reason: x.p.reason })),
     plans: await ctx.db.select().from(subscriptionPlans).orderBy(subscriptionPlans.sortOrder),
+    organizers: await adminOrganizerBilling(ctx.db),
+    eventCreditGrants: (await ctx.db.select({ c: organizationEventCredits, org: organizations.name }).from(organizationEventCredits)
+      .innerJoin(organizations, eq(organizations.id, organizationEventCredits.organizationId)).where(eq(organizationEventCredits.source, "promo"))
+      .orderBy(desc(organizationEventCredits.createdAt)).limit(100))
+      .map((x) => ({ id: x.c.id, organization: x.org, reason: x.c.reason, createdAt: x.c.createdAt, consumedAt: x.c.consumedAt, revokedAt: x.c.revokedAt })),
   };
 }
 
 export async function grantPromotion(ctx: Ctx) {
   const admin = await requireAdmin(ctx);
-  const b = await ctx.json<{ username?: string; organizationId?: string; planCode?: string; days?: number; reason?: string }>();
+  const b = await ctx.json<{ username?: string; organizationId?: string; planCode?: string; days?: number; credits?: number; reason?: string }>();
+  await ctx.limit("admin-promo", 60, 3600, admin.userId);
+  const [plan] = await ctx.db.select().from(subscriptionPlans).where(eq(subscriptionPlans.code, b.planCode ?? "")).limit(1);
+  if (!plan || plan.isDefault) throw new AppError(400, "validation_failed", "Unknown plan.", { planCode: ["Choose a paid plan."] });
+  const reason = typeof b.reason === "string" ? b.reason.trim().slice(0, 500) || null : null;
+  if (plan.audience === "organization") {
+    if (!isUuid(b.organizationId)) throw new AppError(400, "validation_failed", "Choose an organization.", { organizationId: ["Choose an organization."] });
+    const [org] = await ctx.db.select({ id: organizations.id }).from(organizations).where(eq(organizations.id, b.organizationId)).limit(1);
+    if (!org) throw new AppError(400, "validation_failed", "Unknown organization.", { organizationId: ["Unknown organization."] });
+  }
+  // Single Event package as a promotion = free event credits (they never expire and are used before buying).
+  if (plan.code === EVENT_PACKAGE_CODE) {
+    const n = Number(b.credits ?? 1);
+    if (!Number.isInteger(n) || n < 1 || n > 20) throw new AppError(400, "validation_failed", "Choose 1–20 events.", { credits: ["Choose 1–20 events."] });
+    await ctx.db.transaction(async (tx) => {
+      await tx.insert(organizationEventCredits).values(Array.from({ length: n }, () => ({ organizationId: b.organizationId!, source: "promo", grantedBy: admin.userId, reason })));
+      await audit(tx, { actorType: "admin", actorId: admin.userId, action: "admin.event_credits_granted", targetType: "organization", targetId: b.organizationId, organizationId: b.organizationId, data: { credits: n } });
+    });
+    return reply(201, { credits: n });
+  }
+  if (plan.billingPeriod === "one_time") throw new AppError(400, "validation_failed", "Unknown plan.", { planCode: ["Choose a paid plan."] });
   const days = Number(b.days);
   if (!Number.isInteger(days) || days < 1 || days > 366) throw new AppError(400, "validation_failed", "Choose 1–366 days.", { days: ["Choose 1–366 days."] });
-  const [plan] = await ctx.db.select().from(subscriptionPlans).where(eq(subscriptionPlans.code, b.planCode ?? "")).limit(1);
-  if (!plan) throw new AppError(400, "validation_failed", "Unknown plan.", { planCode: ["Unknown plan."] });
   let attendeeId: string | null = null, organizationId: string | null = null;
   if (plan.audience === "attendee") {
     const [p] = await ctx.db.select({ a: userProfiles.attendeeId }).from(userProfiles).where(eq(userProfiles.usernameNormalized, (b.username ?? "").trim().replace(/^@/, "").toLowerCase())).limit(1);
@@ -316,7 +341,7 @@ export async function grantPromotion(ctx: Ctx) {
   }
   const endsAt = new Date(Date.now() + days * 86_400_000);
   const id = await ctx.db.transaction(async (tx) => {
-    const [promo] = await tx.insert(promotionalAccess).values({ subscriberType: plan.audience, attendeeId, organizationId, planId: plan.id, grantedBy: admin.userId, reason: b.reason?.slice(0, 500) ?? null, startsAt: new Date(), endsAt }).returning({ id: promotionalAccess.id });
+    const [promo] = await tx.insert(promotionalAccess).values({ subscriberType: plan.audience, attendeeId, organizationId, planId: plan.id, grantedBy: admin.userId, reason, startsAt: new Date(), endsAt }).returning({ id: promotionalAccess.id });
     await grantPlan(tx, { attendeeId, organizationId }, plan.id, "promo", promo!.id, endsAt);
     await audit(tx, { actorType: "admin", actorId: admin.userId, action: "admin.promo_granted", targetType: "promotional_access", targetId: promo!.id, data: { plan: plan.code, days } });
     return promo!.id;
@@ -332,6 +357,16 @@ export async function revokePromotion(ctx: Ctx) {
     await revokeSource(tx, ctx.params.id!);
     await audit(tx, { actorType: "admin", actorId: admin.userId, action: "admin.promo_revoked", targetType: "promotional_access", targetId: ctx.params.id });
   });
+  return reply(204);
+}
+
+/** Withdraws an unused promotional event credit. */
+export async function revokeEventCredit(ctx: Ctx) {
+  const admin = await requireAdmin(ctx);
+  const r = await ctx.db.update(organizationEventCredits).set({ revokedAt: new Date() })
+    .where(and(eq(organizationEventCredits.id, ctx.params.id!), eq(organizationEventCredits.source, "promo"), sql`consumed_at IS NULL AND revoked_at IS NULL`)).returning({ org: organizationEventCredits.organizationId });
+  if (!r.length) throw conflict("not_revocable", "Only unused promotional credits can be revoked.");
+  await audit(ctx.db, { actorType: "admin", actorId: admin.userId, action: "admin.event_credit_revoked", targetType: "event_credit", targetId: ctx.params.id, organizationId: r[0]!.org });
   return reply(204);
 }
 
@@ -365,6 +400,10 @@ export async function runMaintenance(db: Executor) {
       await audit(tx, { actorType: "system", action: "attendee.deleted", targetType: "attendee", targetId: d.attendeeId });
     });
   }
+  // Subscriptions whose paid period (plus a day of grace) ended without a renewal are expired. A late renewal webhook
+  // can still revive them; entitlements already stopped at valid_until. Nothing else is touched or deleted.
+  await db.execute(sql`UPDATE subscriptions SET status = 'expired', updated_at = now()
+    WHERE status IN ('active','pending') AND current_period_end IS NOT NULL AND current_period_end < now() - interval '1 day'`);
   await db.execute(sql`DELETE FROM idempotency_keys WHERE expires_at < now()`);
   await db.execute(sql`DELETE FROM rate_limit_counters WHERE window_start < now() - interval '2 days'`);
   await db.execute(sql`DELETE FROM attendee_sessions WHERE (revoked_at IS NOT NULL AND revoked_at < now() - interval '30 days') OR absolute_expires_at < now() - interval '30 days'`);

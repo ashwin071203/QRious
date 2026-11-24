@@ -165,7 +165,8 @@ test("Organizer QR Management, Participants and Networking are real pages; mobil
   await page.goto("/organizer/qr");
   await expect(page.getByRole("heading", { name: "QR Management", level: 1 })).toBeVisible();
   await expect(page.getByAltText(/QR code for Jam Session E2E/)).toBeVisible();
-  await expect(page.getByText(`/e/${code}`)).toBeVisible();
+  if (mobile) await expect(page.getByText(`/e/${code}`)).toBeVisible();
+  else await expect(page.getByLabel("Event link")).toHaveValue(new RegExp(`/e/${code}$`)); // desktop: copyable link field
   await expect(page).toHaveURL(/\/organizer\/qr\?event=[0-9a-f-]+$/);
 
   await page.goto("/organizer/participants");
@@ -198,5 +199,39 @@ test("Organizer QR Management, Participants and Networking are real pages; mobil
     await expect(page).toHaveURL(/\/organizer\/participants/);
     await expect(nav.getByRole("link", { name: "Participants" })).toHaveAttribute("aria-current", "page");
   }
+  await ctx.close();
+});
+
+test("Starter: 3 lifetime free events, then upgrade options; premium tools show upgrade hints", async ({ browser }, info) => {
+  test.setTimeout(120_000);
+  const mobile = info.project.name === "mobile";
+  const { ctx, page } = await organizerCreatesEvent(browser, mobile ? { viewport: { width: 412, height: 915 }, isMobile: true, hasTouch: true } : { viewport: { width: 1280, height: 860 } });
+  const orgId = (await (await page.request.get("/api/v1/organizer/me")).json()).organizations[0].id as string;
+  await page.goto("/organizer/billing");
+  await expect(page.getByText("1 of 3 used")).toBeVisible();
+  for (const price of ["₹499", "₹1,499", "₹199"]) await expect(page.getByText(price).first()).toBeVisible();
+  // Use the remaining two free events through the API (same session); the UI then blocks the 4th
+  const cats = await (await page.request.get("/api/v1/public/categories")).json();
+  const start = new Date(Date.now() + 86_400_000);
+  for (const n of [2, 3]) {
+    const r = await page.request.post(`/api/v1/organizations/${orgId}/events`, { headers: { "X-QRious-Client": "web", origin: new URL(page.url()).origin },
+      data: { name: `Extra ${n}`, categoryId: cats[0].id, venueName: "Hall", startsAt: start.toISOString(), endsAt: new Date(+start + 7_200_000).toISOString() } });
+    expect(r.status()).toBe(201);
+  }
+  const blocked = await page.request.post(`/api/v1/organizations/${orgId}/events`, { headers: { "X-QRious-Client": "web", origin: new URL(page.url()).origin },
+    data: { name: "Fourth", categoryId: cats[0].id, venueName: "Hall", startsAt: start.toISOString(), endsAt: new Date(+start + 7_200_000).toISOString() } });
+  expect(blocked.status()).toBe(402);
+  await page.goto("/organizer/events/new");
+  await expect(page.getByRole("heading", { name: "You've used your 3 free events" })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Upgrade to Pro/ })).toBeVisible();
+  await expect(page.getByLabel("Event name")).toHaveCount(0);
+  await page.goto("/organizer/networking");
+  await expect(page.getByText("Custom suggestions").first()).toBeVisible();
+  if (!mobile) {
+    await page.goto("/organizer/participants");
+    await expect(page.getByRole("link", { name: "Export · Pro" })).toBeVisible();
+    await expect(page.getByText("Detailed participant statistics")).toBeVisible();
+  }
+  await shot(page, `organizer-starter-${info.project.name}`);
   await ctx.close();
 });

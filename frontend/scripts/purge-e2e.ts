@@ -39,6 +39,11 @@ async function main() {
     await c.query(`DELETE FROM interests WHERE created_by_attendee_id IN (SELECT id FROM e2e_attendees)`);
     await c.query(`DELETE FROM skills WHERE created_by_attendee_id IN (SELECT id FROM e2e_attendees)`);
     await c.query(`DELETE FROM attendees WHERE id IN (SELECT id FROM e2e_attendees)`);
+    // Test-mode billing rows of those organizations (credits → payments → subscriptions; FK order).
+    await c.query(`DELETE FROM organization_event_credits WHERE organization_id IN (SELECT id FROM e2e_orgs)`);
+    await c.query(`DELETE FROM subscription_invoices WHERE payment_id IN (SELECT id FROM payments WHERE organization_id IN (SELECT id FROM e2e_orgs))`);
+    await c.query(`DELETE FROM payments WHERE organization_id IN (SELECT id FROM e2e_orgs)`);
+    await c.query(`DELETE FROM subscriptions WHERE organization_id IN (SELECT id FROM e2e_orgs)`);
     await c.query(`DELETE FROM events WHERE id IN (SELECT id FROM e2e_events)`);
     await c.query(`DELETE FROM organizations WHERE id IN (SELECT id FROM e2e_orgs)`);
     await c.query(`DELETE FROM organizer_users WHERE id IN (SELECT id FROM e2e_orgusers)`);
