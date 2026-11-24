@@ -470,6 +470,6 @@ describe("Account deletion & billing", () => {
     const r = await a.client.post("/subscriptions/checkout", { planCode: "attendee_premium_monthly" });
     expect(r.status).toBe(503);
     expect(r.body.code).toBe("payments_unavailable");
-    expect((await new Client().post("/payments/webhook/razorpay", {}, { "x-razorpay-signature": "bad" })).status).toBe(401);
+    expect((await new Client().post("/payments/webhook/razorpay", {}, { "x-razorpay-signature": "bad" })).status).toBe(503); // no secret configured yet
   });
 });

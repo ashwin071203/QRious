@@ -24,7 +24,7 @@ export default function OrganizerBillingPage() {
       <PageHeader title="Billing & Plans" subtitle={ent.data ? `Current plan: ${ent.data.planName}` : undefined} />
       {!plans.data ? <Skeleton className="h-72" /> : (
         <>
-          {!plans.data.paymentsEnabled && <p className="card mb-5 p-4 text-sm text-text-2">Online payments are being activated. Every organizer can use all Starter features for free today; contact QRious to try Pro or Business.</p>}
+          <p className="card mb-5 p-4 text-sm text-text-2">Every organizer can use all Starter features for free. Online checkout for Pro and Business isn&apos;t open yet — contact QRious to try them.</p>
           <div className="grid gap-4 md:grid-cols-3">
             {plans.data.plans.map((p) => (
               <div key={p.code} className={`card p-5 ${ent.data?.planCode === p.code ? "border-primary/60" : ""}`}>

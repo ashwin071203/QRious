@@ -22,11 +22,32 @@ export const config = {
   /** Comma-separated organizer emails that become platform admins on registration. */
   adminEmails: (process.env.QRIOUS_ADMIN_EMAILS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
   razorpay: {
-    keyId: process.env.RAZORPAY_KEY_ID ?? "",
-    keySecret: process.env.RAZORPAY_KEY_SECRET ?? "",
-    webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET ?? "",
+    get keyId() {
+      return (process.env.RAZORPAY_KEY_ID ?? "").trim();
+    },
+    get keySecret() {
+      return (process.env.RAZORPAY_KEY_SECRET ?? "").trim();
+    },
+    get webhookSecret() {
+      return (process.env.RAZORPAY_WEBHOOK_SECRET ?? "").trim();
+    },
+    /**
+     * TEST MODE ONLY (D-01). Razorpay key ids are prefixed by mode (rzp_test_… / rzp_live_…). Payments switch on only
+     * for test keys; live keys stay disabled unless a separate, explicit RAZORPAY_ALLOW_LIVE=1 is set at go-live.
+     */
+    get mode(): "off" | "test" | "live" | "invalid" {
+      if (!this.keyId || !this.keySecret) return "off";
+      if (this.keyId.startsWith("rzp_test_")) return "test";
+      if (this.keyId.startsWith("rzp_live_")) return "live";
+      return "invalid";
+    },
     get enabled() {
-      return !!(this.keyId && this.keySecret);
+      const m = this.mode;
+      return m === "test" || (m === "live" && process.env.RAZORPAY_ALLOW_LIVE === "1");
+    },
+    /** Basic-auth header for server-to-server Razorpay API calls (never sent to the browser). */
+    authHeader() {
+      return `Basic ${Buffer.from(`${this.keyId}:${this.keySecret}`).toString("base64")}`;
     },
   },
   cronSecret: process.env.CRON_SECRET ?? "",

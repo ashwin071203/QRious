@@ -51,9 +51,11 @@ The admin journey (`e2e/admin.spec.ts`) runs only with `E2E_ADMIN_TOKEN` set, be
 
 `npm run vercel-build` runs migrations then `next build`. Required environment variables: `DATABASE_URL` (Neon),
 `BLOB_READ_WRITE_TOKEN`, `QRIOUS_RECOVERY_PEPPER`, `QRIOUS_IP_SALT`, `CRON_SECRET`, `QRIOUS_ADMIN_BOOTSTRAP_TOKEN`.
-Optional: `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` (test mode, D-01). With keys set, also put each
-paid plan's Razorpay plan id in `subscription_plans.gateway_plan_id` and point a Razorpay webhook at `/api/v1/payments/webhook/razorpay`.
-Premium is granted only by the verified webhook.
+Payments: `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`. TEST MODE ONLY (D-01): payments switch on only for
+`rzp_test_` keys; live keys stay disabled unless `RAZORPAY_ALLOW_LIVE=1` is deliberately set at go-live. Razorpay Subscriptions must be
+enabled on the account. Admin → Revenue → Razorpay shows a checklist (never secret values), creates the monthly/yearly plans in
+Razorpay test mode (or links Dashboard-made plans after validating period/amount/currency) and shows the webhook URL and events.
+Premium is granted only by the HMAC-verified webhook. Each build logs a payment configuration check (`scripts/check-gateway.ts`).
 
 Live: https://qrious-rho.vercel.app (Neon PostgreSQL, Singapore). First admin: register an organizer, enter the token
 from `QRIOUS_ADMIN_BOOTSTRAP_TOKEN` under Organizer → Account, then open `/admin` and enroll an authenticator app (D-24).

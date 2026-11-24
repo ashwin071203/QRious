@@ -41,7 +41,7 @@ export default function PremiumPage() {
   const [period, setPeriod] = useState<"month" | "year">("month");
   const [busy, setBusy] = useState(false);
   const billing = useQuery({ queryKey: ["billing"], queryFn: () => api<Billing>("/me/billing") });
-  const plans = useQuery({ queryKey: ["plans", "attendee"], queryFn: () => api<{ paymentsEnabled: boolean; plans: Plan[] }>("/plans?audience=attendee") });
+  const plans = useQuery({ queryKey: ["plans", "attendee"], queryFn: () => api<{ paymentsEnabled: boolean; paymentsMode: string; plans: (Plan & { purchasable?: boolean })[] }>("/plans?audience=attendee") });
   const premium = plans.data?.plans.find((p) => p.code === (period === "month" ? "attendee_premium_monthly" : "attendee_premium_yearly"));
   const isPremium = billing.data?.planCode === "attendee_premium";
   const inr = (minor: number) => new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(minor / 100);
@@ -118,8 +118,13 @@ export default function PremiumPage() {
               <p className="mt-1 font-display text-3xl font-bold">{premium ? inr(premium.priceMinor) : "—"}<span className="text-base font-normal text-text-2">/{period === "month" ? "month" : "year"}</span></p>
               <ul className="mt-5 space-y-2 text-sm">{PREMIUM.map((f) => <li key={f} className="flex gap-2"><Check className="size-4 shrink-0 text-pink" />{f}</li>)}</ul>
               {isPremium ? <p className="mt-6 rounded-xl bg-success/15 px-3 py-2 text-center text-sm text-success">You have Premium</p>
-                : plans.data?.paymentsEnabled ? <Button className="mt-6 w-full" size="lg" loading={busy} onClick={upgrade}>Upgrade to Premium</Button>
+                : plans.data?.paymentsEnabled && premium?.purchasable ? <Button className="mt-6 w-full" size="lg" loading={busy} onClick={upgrade}>Upgrade to Premium</Button>
                 : <p className="mt-6 rounded-xl bg-bg-2 px-3 py-2.5 text-center text-sm text-text-2">Payments are coming soon. Premium will be available to purchase shortly.</p>}
+              {!isPremium && plans.data?.paymentsMode === "test" && premium?.purchasable && (
+                <p className="mt-3 rounded-xl border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning">
+                  Test mode — no real money is charged. Use test card 4718 6091 0820 4366, any future expiry, any CVV and any 4–10 digit OTP.
+                </p>
+              )}
               <p className="mt-3 text-center text-xs text-text-2">Premium never overrides anyone&apos;s privacy, blocks or discovery settings.</p>
             </motion.div>
           </div>

@@ -220,6 +220,13 @@ const routes: Route[] = [
   R("PATCH", "/admin/categories/:id", admin.upsertCategory),
   R("GET", "/admin/audit-logs", admin.auditLog),
   R("GET", "/admin/billing", admin.billingOverview),
+  R("GET", "/admin/payments/gateway", async (ctx) => { await organizers.requireAdmin(ctx); return billing.gatewayStatus(ctx); }),
+  R("POST", "/admin/payments/plans/:code/create", async (ctx) => { const a = await organizers.requireAdmin(ctx); return billing.createGatewayPlan(ctx, a.userId, ctx.params.code!); }),
+  R("PUT", "/admin/payments/plans/:code/gateway", async (ctx) => {
+    const a = await organizers.requireAdmin(ctx);
+    const b = await ctx.json<{ gatewayPlanId?: string }>();
+    return billing.linkGatewayPlan(ctx, a.userId, ctx.params.code!, b.gatewayPlanId);
+  }),
   R("POST", "/admin/promotional-access", admin.grantPromotion),
   R("POST", "/admin/promotional-access/:id/revoke", admin.revokePromotion),
 

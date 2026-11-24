@@ -206,6 +206,92 @@ type BillingData = { paymentsEnabled: boolean; revenue: Record<string, number>; 
   popularPlans: { name: string; n: number }[]; promotions: { id: string; plan: string; subject: string | null; startsAt: string; endsAt: string; revokedAt: string | null; reason: string | null }[];
   plans: { code: string; name: string; audience: string; priceMinor: number; isActive: boolean }[] };
 
+type Gateway = { mode: "off" | "test" | "live" | "invalid"; enabled: boolean; keyIdSet: boolean; keySecretSet: boolean; webhookSecretSet: boolean; keysValid: boolean | null; subscriptionsEnabled: boolean | null;
+  webhookUrl: string; webhookEvents: string[]; lastWebhook: { at: string; type: string } | null;
+  plans: { code: string; name: string; billingPeriod: string; priceMinor: number; currency: string; isActive: boolean; gatewayPlanId: string | null }[] };
+
+function Check({ ok, label, detail }: { ok: boolean | null; label: string; detail?: string }) {
+  return (
+    <li className="flex items-start gap-2 py-1">
+      <span aria-hidden className={ok ? "text-success" : ok === null ? "text-text-2" : "text-error"}>{ok ? "✓" : ok === null ? "–" : "✕"}</span>
+      <span>{label}{detail && <span className="block text-xs text-text-2">{detail}</span>}</span>
+    </li>
+  );
+}
+
+/** Razorpay setup (D-01). Shows only whether secrets are present — never their values. Test mode only. */
+function PaymentsSetup() {
+  const toast = useToast();
+  const { busy, run } = useRun();
+  const q = useQuery({ queryKey: ["admin-gateway"], queryFn: () => api<Gateway>("/admin/payments/gateway") });
+  const [link, setLink] = useState<Record<string, string>>({});
+  const [linkErr, setLinkErr] = useState<Record<string, string | undefined>>({});
+  if (!q.data) return <Skeleton className="h-48" />;
+  const g = q.data;
+  const modeText = { off: "Keys missing", test: "TEST mode — no real money moves", live: "LIVE keys detected — payments kept OFF (test mode only)", invalid: "Key id not recognised — payments kept OFF" }[g.mode];
+  async function linkPlan(code: string) {
+    setLinkErr((e) => ({ ...e, [code]: undefined }));
+    try {
+      await api(`/admin/payments/plans/${code}/gateway`, { method: "PUT", body: { gatewayPlanId: link[code] ?? "" } });
+      toast("success", "Plan linked");
+      q.refetch();
+    } catch (e) {
+      setLinkErr((x) => ({ ...x, [code]: e instanceof ApiError ? (e.fieldError("gatewayPlanId") ?? e.message) : "Failed." }));
+    }
+  }
+  return (
+    <section className="card space-y-4 p-5 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="font-display font-semibold">Razorpay</h2>
+        <span className={`rounded-full px-3 py-1 text-xs ${g.mode === "test" ? "bg-warning/15 text-warning" : g.enabled ? "bg-success/15 text-success" : "bg-white/5 text-text-2"}`}>{modeText}</span>
+      </div>
+      <ul>
+        <Check ok={g.keyIdSet} label="RAZORPAY_KEY_ID is set" />
+        <Check ok={g.keySecretSet} label="RAZORPAY_KEY_SECRET is set" />
+        <Check ok={g.mode === "test"} label="Keys are TEST keys (rzp_test_…)" />
+        <Check ok={g.keysValid} label="Razorpay accepts the keys" detail={g.keysValid === null ? "Checked once keys are present" : g.keysValid ? undefined : "Razorpay rejected the key id / secret pair — re-copy both from Dashboard → Account & Settings → API Keys (Test Mode)."} />
+        <Check ok={g.subscriptionsEnabled} label="Subscriptions enabled on the Razorpay account" detail={g.subscriptionsEnabled === false ? "Razorpay Dashboard (Test Mode) → Subscriptions → enable / Get started, then reload this page." : undefined} />
+        <Check ok={g.webhookSecretSet} label="RAZORPAY_WEBHOOK_SECRET is set" />
+        <Check ok={!!g.lastWebhook} label="Webhook received" detail={g.lastWebhook ? `${g.lastWebhook.type} · ${relativeTime(g.lastWebhook.at)}` : "Appears after your first test payment"} />
+        <Check ok={g.plans.every((p) => !!p.gatewayPlanId)} label="Premium plans linked to Razorpay plans" />
+      </ul>
+
+      <div>
+        <h3 className="mb-2 font-medium">Plans</h3>
+        <ul className="space-y-3">
+          {g.plans.map((p) => (
+            <li key={p.code} className="rounded-xl bg-bg-2 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span>{p.name} · {inr(p.priceMinor)} / {p.billingPeriod}</span>
+                {p.gatewayPlanId ? <code className="font-mono text-xs text-success">{p.gatewayPlanId}</code>
+                  : <Button size="sm" disabled={g.mode !== "test" || !g.keysValid || g.subscriptionsEnabled === false} loading={busy === p.code}
+                      onClick={() => run(p.code, () => api(`/admin/payments/plans/${p.code}/create`, { method: "POST" }), "Created in Razorpay (test mode)", () => q.refetch())}>Create in Razorpay (test)</Button>}
+              </div>
+              {!p.gatewayPlanId && g.enabled && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Input aria-label={`Razorpay plan id for ${p.name}`} placeholder="…or paste an existing plan_ id" className="h-10 max-w-xs" value={link[p.code] ?? ""}
+                    onChange={(e) => setLink({ ...link, [p.code]: e.target.value })} aria-invalid={!!linkErr[p.code]} />
+                  <Button size="sm" variant="secondary" onClick={() => linkPlan(p.code)} disabled={!link[p.code]}>Link</Button>
+                  {linkErr[p.code] && <p className="w-full text-xs text-error">{linkErr[p.code]}</p>}
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div>
+        <h3 className="mb-1 font-medium">Webhook (Razorpay Dashboard → Test Mode → Account &amp; Settings → Webhooks)</h3>
+        <div className="flex items-center gap-2 rounded-xl bg-bg-2 px-3 py-2">
+          <code className="flex-1 font-mono text-xs break-all">{g.webhookUrl}</code>
+          <button type="button" className="text-xs text-accent-light" onClick={() => navigator.clipboard?.writeText(g.webhookUrl).then(() => toast("success", "Copied"), () => {})}>Copy</button>
+        </div>
+        <p className="mt-2 text-xs text-text-2">Active events: {g.webhookEvents.join(", ")}</p>
+      </div>
+    </section>
+  );
+}
+
 function Billing() {
   const { busy, run } = useRun();
   const q = useQuery({ queryKey: ["admin-billing"], queryFn: () => api<BillingData>("/admin/billing") });
@@ -215,7 +301,7 @@ function Billing() {
   const isOrgPlan = d.plans.find((p) => p.code === promo.planCode)?.audience === "organization";
   return (
     <div className="space-y-5">
-      {!d.paymentsEnabled && <p className="card p-4 text-sm text-text-2">Payments are not configured (Razorpay test keys pending, D-01). Revenue figures will populate from verified webhooks once enabled.</p>}
+      <PaymentsSetup />
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {[["Total revenue (net)", inr(d.revenue.revenue_minor!)], ["MRR", inr(d.revenue.mrrMinor!)], ["ARR", inr(d.revenue.arrMinor!)], ["Failed payments", d.revenue.failed_payments],
           ["Active subscriptions", d.subscriptions?.active ?? 0], ["Cancelled", d.subscriptions?.cancelled ?? 0], ["Premium attendees", d.subscriptions?.premium_attendees ?? 0], ["Conversion", `${d.conversionRate}%`]]
