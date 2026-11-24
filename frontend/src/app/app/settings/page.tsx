@@ -1,5 +1,7 @@
 "use client";
 
+import { NotificationSettingsPanel } from "@/components/notifications/Notifications";
+import { disablePush } from "@/lib/push";
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -208,6 +210,7 @@ function SessionsSection() {
   }
 
   async function signOut() {
+    await disablePush("attendee").catch(() => {}); // shared devices: stop pushes for this account here
     await api("/me/session/logout", { method: "POST" }).catch(() => {});
     signOutDone();
   }
@@ -251,17 +254,10 @@ function SessionsSection() {
 }
 
 function NotificationPrefsSection() {
-  const toast = useToast();
-  const { data, refetch } = useQuery({ queryKey: ["notification-prefs"], queryFn: () => api<Record<string, boolean>>("/me/notification-preferences") });
-  const labels: [string, string][] = [["connectionRequests", "New connection requests"], ["connectionAccepted", "Accepted requests"], ["messages", "New messages"], ["eventUpdates", "Event updates"], ["billing", "Billing"]];
-  async function set(key: string, value: boolean) {
-    try { await api("/me/notification-preferences", { method: "PUT", body: { ...data, [key]: value } }); refetch(); }
-    catch (e) { toast("error", e instanceof ApiError ? e.message : "Couldn't save."); }
-  }
   return (
     <section className="card space-y-4 p-5">
-      <SectionTitle icon={<Bell className="size-5" />} title="Notifications" description="In-app notifications you want to receive." />
-      {!data ? <Skeleton className="h-32" /> : labels.map(([k, l]) => <Toggle key={k} checked={!!data[k]} onChange={(v) => set(k, v)} label={l} />)}
+      <SectionTitle id="notifications" icon={<Bell className="size-5" />} title="Notifications" description="Choose what you hear about, in the app and as push notifications." />
+      <NotificationSettingsPanel role="attendee" />
     </section>
   );
 }

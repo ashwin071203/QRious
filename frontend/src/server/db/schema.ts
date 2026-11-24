@@ -33,6 +33,10 @@ export const AVAILABILITY_VISIBILITY = ["members", "connections", "hidden"] as c
 export const ACTIVITY_KIND = ["join", "status_change", "connection_accepted", "message_sent"] as const;
 export const CONNECTION_STATUS = ["pending", "accepted", "declined", "withdrawn", "removed"] as const;
 export const NOTIFICATION_TYPE = ["connection_request", "connection_accepted", "message", "event_update", "system", "billing"] as const;
+/** Notification categories (preferences are per category). Attendee and organizer categories share one table. */
+export const NOTIFICATION_CATEGORY = ["messages", "groups", "connections", "events", "matches", "billing", "account", "security", "announcements",
+  "org_participants", "org_events", "org_engagement", "org_billing", "organization"] as const;
+export const RECIPIENT_TYPE = ["attendee", "organizer"] as const;
 export const REPORT_REASON = ["spam", "harassment", "inappropriate_content", "fake_profile", "underage", "other"] as const;
 export const REPORT_STATUS = ["open", "in_review", "actioned", "dismissed"] as const;
 export const ACTOR_TYPE = ["attendee", "organizer", "admin", "system", "gateway"] as const;
@@ -555,20 +559,77 @@ export const messages = pgTable("messages", {
 ]);
 
 // ---------- Notifications ----------
+/**
+ * One notification for one recipient — an attendee OR an organizer account. Produced only by server/notifications
+ * (notify()); dedupe_key coalesces repeats (e.g. one entry per conversation) and makes one-off notices idempotent.
+ */
 export const notifications = pgTable("notifications", {
   id: uuid("id").primaryKey().defaultRandom(),
-  attendeeId: uuid("attendee_id").notNull().references(() => attendees.id, { onDelete: "cascade" }),
+  attendeeId: uuid("attendee_id").references(() => attendees.id, { onDelete: "cascade" }),
+  organizerUserId: uuid("organizer_user_id").references(() => organizerUsers.id, { onDelete: "cascade" }),
   type: text("type").notNull(),
+  category: text("category").notNull().default("account"),
+  title: text("title").notNull().default(""),
+  body: text("body"),
+  /** In-app path opened when the notification is clicked (always a relative path built by the server). */
+  link: text("link"),
+  dedupeKey: text("dedupe_key"),
   eventId: uuid("event_id").references(() => events.id, { onDelete: "set null" }),
   actorProfileId: uuid("actor_profile_id").references(() => userProfiles.id, { onDelete: "set null" }),
   entityId: uuid("entity_id"),
   payload: jsonb("payload").notNull().default({}),
+  /** Web push: none (not wanted), pending, sending, sent, skipped (no device / recipient active in-app). */
+  pushStatus: text("push_status").notNull().default("none"),
   createdAt: createdAt(),
   readAt: ts("read_at"),
 }, (t) => [
   index("ix_notifications_attendee").on(t.attendeeId, t.createdAt),
   index("ix_notifications_unread").on(t.attendeeId).where(sql`read_at IS NULL`),
-  check("ck_notifications_type", inList("type", NOTIFICATION_TYPE)),
+  index("ix_notifications_organizer").on(t.organizerUserId, t.createdAt),
+  index("ix_notifications_push_pending").on(t.createdAt).where(sql`push_status = 'pending'`),
+  uniqueIndex("ux_notifications_attendee_dedupe").on(t.attendeeId, t.dedupeKey).where(sql`attendee_id IS NOT NULL AND dedupe_key IS NOT NULL`),
+  uniqueIndex("ux_notifications_organizer_dedupe").on(t.organizerUserId, t.dedupeKey).where(sql`organizer_user_id IS NOT NULL AND dedupe_key IS NOT NULL`),
+  check("ck_notifications_recipient", sql`(attendee_id IS NOT NULL) <> (organizer_user_id IS NOT NULL)`),
+  check("ck_notifications_category", inList("category", NOTIFICATION_CATEGORY)),
+  check("ck_notifications_push_status", sql`push_status IN ('none','pending','sending','sent','skipped')`),
+]);
+
+/** Per-recipient, per-category delivery choices. Missing row = the category's default. */
+export const notificationSettings = pgTable("notification_settings", {
+  recipientType: text("recipient_type").notNull(),
+  recipientId: uuid("recipient_id").notNull(),
+  category: text("category").notNull(),
+  inApp: boolean("in_app").notNull().default(true),
+  push: boolean("push").notNull().default(true),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.recipientType, t.recipientId, t.category] }),
+  check("ck_notification_settings_recipient", inList("recipient_type", RECIPIENT_TYPE)),
+  check("ck_notification_settings_category", inList("category", NOTIFICATION_CATEGORY))]);
+
+/**
+ * A browser/device push endpoint. Bound to the session that registered it: signing out or revoking that session
+ * stops delivery to the device automatically (delivery only uses subscriptions whose session is still valid).
+ */
+export const pushSubscriptions = pgTable("push_subscriptions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  recipientType: text("recipient_type").notNull(),
+  attendeeId: uuid("attendee_id").references(() => attendees.id, { onDelete: "cascade" }),
+  organizerUserId: uuid("organizer_user_id").references(() => organizerUsers.id, { onDelete: "cascade" }),
+  attendeeSessionId: uuid("attendee_session_id").references(() => attendeeSessions.id, { onDelete: "cascade" }),
+  organizerSessionId: uuid("organizer_session_id").references(() => organizerSessions.id, { onDelete: "cascade" }),
+  endpoint: text("endpoint").notNull(),
+  p256dh: text("p256dh").notNull(),
+  auth: text("auth").notNull(),
+  userAgentSummary: text("user_agent_summary"),
+  failureCount: integer("failure_count").notNull().default(0),
+  lastSuccessAt: ts("last_success_at"),
+  createdAt: createdAt(),
+}, (t) => [
+  uniqueIndex("ux_push_subscriptions_endpoint").on(t.endpoint),
+  index("ix_push_subscriptions_attendee").on(t.attendeeId),
+  index("ix_push_subscriptions_organizer").on(t.organizerUserId),
+  check("ck_push_subscriptions_recipient", sql`(recipient_type = 'attendee' AND attendee_id IS NOT NULL AND attendee_session_id IS NOT NULL AND organizer_user_id IS NULL)
+    OR (recipient_type = 'organizer' AND organizer_user_id IS NOT NULL AND organizer_session_id IS NOT NULL AND attendee_id IS NULL)`),
 ]);
 
 export const notificationPreferences = pgTable("notification_preferences", {

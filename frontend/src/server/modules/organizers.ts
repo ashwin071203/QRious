@@ -11,6 +11,7 @@ import { audit } from "@/server/core/platform";
 import { removeMedia, saveSquareImage } from "@/server/core/media";
 import { cleanText, generateRecoveryCode, hashRecoveryCode, newToken, normalizeHttpsUrl, normalizeRecoveryCode, sha256, slugify, userAgentSummary, verifyRecoveryCode } from "@/server/lib/rules";
 import { orgEntitlements, requireOrgFeature } from "./entitlements";
+import * as rules from "@/server/notifications/rules";
 import QRCode from "qrcode";
 import { decryptSecret, encryptSecret, newTotpSecret, otpauthUrl, verifyTotp } from "@/server/lib/totp";
 
@@ -136,6 +137,7 @@ export async function mfaEnable(ctx: Ctx) {
   if (!at) throw new AppError(400, "validation_failed", "One or more fields are invalid.", { code: ["That code isn’t right. Check your authenticator app and try again."] });
   await ctx.db.update(organizerSessions).set({ mfaVerifiedAt: at }).where(eq(organizerSessions.id, o.sessionId));
   await audit(ctx.db, { actorType: "admin", actorId: o.userId, action: "admin.mfa_enabled", ip: ctx.ip });
+  await rules.security(ctx.db, { organizerUserId: o.userId }, "mfa_enabled", "Two-factor authentication is on", null, "/admin");
   return { ok: true };
 }
 
@@ -199,6 +201,8 @@ export async function login(ctx: Ctx) {
   if (typeof b.password !== "string" || !(await verifyPassword(b.password, u.passwordHash))) {
     const failed = u.failedLogins + 1;
     await ctx.db.update(organizerUsers).set(failed >= 5 ? { failedLogins: 0, lockedUntil: new Date(Date.now() + 15 * 60_000) } : { failedLogins: failed }).where(eq(organizerUsers.id, u.id));
+    if (failed >= 5) await rules.security(ctx.db, { organizerUserId: u.id }, "login_locked", "Sign-in locked after failed attempts",
+      "Someone entered a wrong password 5 times. Sign-in is paused for 15 minutes. If this wasn't you, change your password.", "/organizer/account");
     await audit(ctx.db, { actorType: "organizer", actorId: u.id, action: "organizer.login_failed", ip: ctx.ip });
     throw fail();
   }
@@ -244,6 +248,7 @@ export async function recoverOrganizer(ctx: Ctx) {
     await new Promise((r) => setTimeout(r, 5)); // session created after passwordChangedAt
     await createOrgSession(ctx, tx, u.id, u.isAdmin);
     await audit(tx, { actorType: "organizer", actorId: u.id, action: "organizer.recovered", ip: ctx.ip });
+    await rules.security(tx, { organizerUserId: u.id }, "account_recovered", "Your account was recovered with your recovery code", "Your password was reset and other sessions were signed out.", "/organizer/account");
     return newCode;
   });
   if (!result) throw fail();
@@ -259,6 +264,7 @@ export async function changePassword(ctx: Ctx) {
   const pp = passwordProblem(b.newPassword);
   if (pp) throw new AppError(400, "validation_failed", "One or more fields are invalid.", { newPassword: [pp] });
   await ctx.db.update(organizerUsers).set({ passwordHash: await hashPassword(b.newPassword!), passwordChangedAt: new Date() }).where(eq(organizerUsers.id, u.id));
+  await rules.security(ctx.db, { organizerUserId: u.id }, "password_changed", "Your password was changed", "If this wasn't you, recover your account with your recovery code.", "/organizer/account");
   await new Promise((r) => setTimeout(r, 5));
   await createOrgSession(ctx, ctx.db, u.id, u.isAdmin);
   return reply(204);
@@ -266,7 +272,11 @@ export async function changePassword(ctx: Ctx) {
 
 export async function regenerateOrgRecovery(ctx: Ctx) {
   const o = await requireOrganizer(ctx);
-  return { recoveryCode: await ctx.db.transaction((tx) => issueOrgRecovery(tx, o.userId)) };
+  return { recoveryCode: await ctx.db.transaction(async (tx) => {
+    const code = await issueOrgRecovery(tx, o.userId);
+    await rules.security(tx, { organizerUserId: o.userId }, "recovery_code_changed", "Your recovery code was changed", "Your old code no longer works.", "/organizer/account");
+    return code;
+  }) };
 }
 
 /** One-time admin bootstrap: the deployment's QRIOUS_ADMIN_BOOTSTRAP_TOKEN promotes the caller if no admin exists. */
@@ -436,6 +446,8 @@ export async function addMember(ctx: Ctx) {
     const r = await tx.insert(organizationMembers).values({ organizationId: orgId, organizerUserId: user.id, role: "member" }).onConflictDoNothing().returning({ id: organizationMembers.organizerUserId });
     if (!r.length) throw conflict("already_member", "That person is already a member.");
     await audit(tx, { actorType: "organizer", actorId: organizer.userId, action: "organization.member_added", targetType: "organizer", targetId: user.id, organizationId: orgId });
+    const [o] = await tx.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
+    await rules.memberChanged(tx, orgId, o?.name ?? "the organization", user.id, "added", organizer.userId);
   });
   return reply(201, { ok: true });
 }
@@ -451,6 +463,8 @@ export async function removeMember(ctx: Ctx) {
   if (m.role === "owner") throw conflict("owner_required", "The owner can't be removed or leave the organization.");
   await ctx.db.delete(organizationMembers).where(and(eq(organizationMembers.organizationId, orgId), eq(organizationMembers.organizerUserId, target)));
   await audit(ctx.db, { actorType: "organizer", actorId: organizer.userId, action: target === organizer.userId ? "organization.member_left" : "organization.member_removed", targetType: "organizer", targetId: target, organizationId: orgId });
+  const [org] = await ctx.db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
+  await rules.memberChanged(ctx.db, orgId, org?.name ?? "the organization", target, target === organizer.userId ? "left" : "removed", organizer.userId);
   return reply(204);
 }
 

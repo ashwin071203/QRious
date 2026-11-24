@@ -8,7 +8,7 @@ import type { Ctx } from "@/server/core/http";
 import { audit } from "@/server/core/platform";
 import { generateRecoveryCode, hashRecoveryCode, newToken, normalizeRecoveryCode, normalizeUsername, sha256, userAgentSummary, verifyRecoveryCode } from "@/server/lib/rules";
 
-const { attendeeSessions, attendees, attendeeRecoveryCodes, userProfiles, notifications } = schema;
+const { attendeeSessions, attendees, attendeeRecoveryCodes, userProfiles } = schema;
 export const ATTENDEE_COOKIE = "qr_s";
 
 export type AttendeeAuth = { attendeeId: string; sessionId: string; profileId: string; status: string };
@@ -181,10 +181,9 @@ export async function recoverAccount(ctx: Ctx, usernameInput: unknown, codeInput
     await revokeAllSessions(tx, profile.attendeeId, "recovery");
     const newCode = await issueRecoveryCode(tx, profile.attendeeId, "used");
     const session = await createSession(tx, profile.attendeeId, ctx.userAgent);
-    await tx.insert(notifications).values({
-      attendeeId: profile.attendeeId, type: "system",
-      payload: { kind: "account_recovered", message: "Your account was recovered on a new device. Other devices were signed out." },
-    });
+    const { security } = await import("@/server/notifications/rules");
+    await security(tx, { attendeeId: profile.attendeeId }, "account_recovered", "Your account was recovered on a new device",
+      "Other devices were signed out. If this wasn't you, recover your account again with your new code.", "/app/settings");
     await audit(tx, { actorType: "attendee", actorId: profile.attendeeId, action: "attendee.recovered", targetType: "profile", targetId: profile.id, ip: ctx.ip });
     return { ok: true, token: session.token, expiresAt: session.expiresAt, newCode };
   });

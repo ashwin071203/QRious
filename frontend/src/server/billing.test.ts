@@ -204,7 +204,7 @@ describe("Razorpay subscriptions — test mode (D-01)", () => {
 
     await webhook("subscription.pending", { id: subId, status: "pending", current_start: start, current_end: end });
     const notes = await u.client.get("/me/notifications");
-    expect(JSON.stringify(notes.body)).toContain("renewal payment failed");
+    expect(notes.body.items[0]).toMatchObject({ type: "billing.payment_failed", category: "billing", title: "Premium payment failed", link: "/app/premium" });
     await webhook("subscription.halted", { id: subId, status: "halted", current_start: start, current_end: end });
     expect(await premium(u.client)).not.toBe("attendee_premium");
     await webhook("subscription.resumed", { id: subId, status: "active", current_start: start, current_end: end });

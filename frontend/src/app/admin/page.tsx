@@ -54,7 +54,47 @@ function Overview() {
       </div>
       <div className="card p-5 text-sm"><h2 className="mb-2 font-display font-semibold">System health</h2>
         {Object.entries(q.data.health).map(([k, v]) => <p key={k} className="flex justify-between border-b border-line py-1.5 last:border-0"><span className="text-text-2">{k}</span><span>{String(v)}</span></p>)}</div>
+      <Announcement />
     </div>
+  );
+}
+
+/** Platform announcement → notification centre (and push, for people who enabled announcement pushes). */
+function Announcement() {
+  const toast = useToast();
+  const [f, setF] = useState({ audience: "all", title: "", body: "", link: "" });
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  async function send() {
+    setBusy(true); setErrors({});
+    try {
+      const r = await api<{ recipients: number }>("/admin/announcements", { method: "POST", body: { ...f, link: f.link.trim() || undefined } });
+      toast("success", `Announcement sent to ${r.recipients} people`);
+      setF({ audience: f.audience, title: "", body: "", link: "" });
+    } catch (e) {
+      if (e instanceof ApiError && e.errors) setErrors(Object.fromEntries(Object.entries(e.errors).map(([k, v]) => [k, v[0]!])));
+      toast("error", e instanceof ApiError ? e.message : "Couldn't send.");
+    } finally { setBusy(false); setConfirm(false); }
+  }
+  return (
+    <section className="card space-y-4 p-5">
+      <h2 className="font-display font-semibold">Send an announcement</h2>
+      <p className="text-sm text-text-2">Appears in the notification centre of everyone in the audience. Use it for important platform news only.</p>
+      <div className="grid gap-4 sm:grid-cols-[200px_1fr]">
+        <Field label="Audience" htmlFor="ann-aud" error={errors.audience}>
+          <Select id="ann-aud" value={f.audience} onChange={(e) => setF({ ...f, audience: e.target.value })}>
+            <option value="all">Everyone</option><option value="attendees">Attendees</option><option value="organizers">Organizers</option>
+          </Select>
+        </Field>
+        <Field label="Title" htmlFor="ann-title" error={errors.title}><Input id="ann-title" maxLength={120} value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} /></Field>
+      </div>
+      <Field label="Message" optional htmlFor="ann-body" error={errors.body}><Input id="ann-body" maxLength={300} value={f.body} onChange={(e) => setF({ ...f, body: e.target.value })} /></Field>
+      <Field label="Link inside QRious" optional htmlFor="ann-link" hint="A path such as /app/premium" error={errors.link}><Input id="ann-link" value={f.link} placeholder="/app/…" onChange={(e) => setF({ ...f, link: e.target.value })} /></Field>
+      <div className="flex justify-end"><Button disabled={!f.title.trim()} onClick={() => setConfirm(true)}>Send announcement</Button></div>
+      <ConfirmDialog open={confirm} onClose={() => setConfirm(false)} title="Send this announcement?" confirmLabel="Send" busy={busy} onConfirm={send}
+        body={`“${f.title}” goes to ${f.audience === "all" ? "everyone" : f.audience}. This can't be undone.`} />
+    </section>
   );
 }
 

@@ -9,7 +9,8 @@ import { audit } from "@/server/core/platform";
 import { removeMedia, saveSquareImage } from "@/server/core/media";
 import { cleanText } from "@/server/lib/rules";
 import { requireAttendee } from "./identity";
-import { acceptedWith, blockedWith, conversationFor, notify } from "./social";
+import { acceptedWith, blockedWith, conversationFor } from "./social";
+import { notify, toAttendee } from "@/server/notifications/notify";
 
 /**
  * Group conversations (connections-only). Rules, all enforced here:
@@ -93,7 +94,8 @@ export async function createGroup(ctx: Ctx) {
     ]);
     const m = await systemMessage(tx, conv!.id, me.attendeeId, `${mine} created the group “${name}”`);
     await tx.update(conversationMembers).set({ lastReadMessageId: m.id }).where(eq(conversationMembers.conversationId, conv!.id));
-    for (const a of added) await notify(tx, a.attendeeId, "message", { message: `${mine} added you to “${name}”`, group: true }, { actorProfileId: me.profileId, entityId: conv!.id });
+    await notify(tx, added.map((a) => toAttendee(a.attendeeId)), { type: "group.added", category: "groups", title: `${mine} added you to “${name}”`, link: `/app/messages/${conv!.id}`,
+      actorProfileId: me.profileId, actorAttendeeId: me.attendeeId, entityId: conv!.id, dedupeKey: `conv:${conv!.id}` });
     await audit(tx, { actorType: "attendee", actorId: me.attendeeId, action: "group.created", targetType: "conversation", targetId: conv!.id, data: { members: added.length + 1 } });
     return conv!.id;
   });
@@ -109,6 +111,9 @@ export async function renameGroup(ctx: Ctx) {
   await ctx.db.transaction(async (tx) => {
     await tx.update(conversations).set({ name }).where(eq(conversations.id, conv.id));
     await systemMessage(tx, conv.id, me.attendeeId, `${mine} renamed the group to “${name}”`);
+    const others = (await tx.select({ id: conversationMembers.attendeeId }).from(conversationMembers).where(eq(conversationMembers.conversationId, conv.id))).map((r) => r.id).filter((x) => x !== me.attendeeId);
+    await notify(tx, others.map(toAttendee), { type: "group.renamed", category: "groups", title: `Group renamed to “${name}”`, body: `by ${mine}`, link: `/app/messages/${conv.id}`,
+      actorProfileId: me.profileId, actorAttendeeId: me.attendeeId, entityId: conv.id, dedupeKey: `conv:${conv.id}` });
   });
   return { name };
 }
@@ -146,7 +151,8 @@ export async function addMembers(ctx: Ctx) {
     const [{ last }] = (await tx.execute<{ last: number }>(sql`SELECT coalesce(max(id), 0)::int AS last FROM messages WHERE conversation_id = ${conv.id}`)).rows as [{ last: number }];
     await tx.insert(conversationMembers).values(added.map((a) => ({ conversationId: conv.id, attendeeId: a.attendeeId, role: "member", joinedAfterMessageId: last, lastReadMessageId: last })));
     await systemMessage(tx, conv.id, me.attendeeId, `${mine} added ${added.map((a) => a.displayName).join(", ")}`);
-    for (const a of added) await notify(tx, a.attendeeId, "message", { message: `${mine} added you to “${conv.name}”`, group: true }, { actorProfileId: me.profileId, entityId: conv.id });
+    await notify(tx, added.map((a) => toAttendee(a.attendeeId)), { type: "group.added", category: "groups", title: `${mine} added you to “${conv.name}”`, link: `/app/messages/${conv.id}`,
+      actorProfileId: me.profileId, actorAttendeeId: me.attendeeId, entityId: conv.id, dedupeKey: `conv:${conv.id}` });
     await audit(tx, { actorType: "attendee", actorId: me.attendeeId, action: "group.members_added", targetType: "conversation", targetId: conv.id, data: { count: added.length } });
     return added.length;
   });
@@ -179,6 +185,8 @@ export async function removeMember(ctx: Ctx) {
   await ctx.db.transaction(async (tx) => {
     await tx.delete(conversationMembers).where(and(eq(conversationMembers.conversationId, conv.id), eq(conversationMembers.attendeeId, target.attendeeId)));
     await systemMessage(tx, conv.id, me.attendeeId, `${mine} removed ${target.name}`);
+    await tx.delete(schema.notifications).where(and(eq(schema.notifications.attendeeId, target.attendeeId), eq(schema.notifications.dedupeKey, `conv:${conv.id}`)));
+    await notify(tx, toAttendee(target.attendeeId), { type: "group.removed", category: "groups", title: `You were removed from “${conv.name}”`, link: "/app/messages", entityId: conv.id });
     await settle(tx, conv.id);
     await audit(tx, { actorType: "attendee", actorId: me.attendeeId, action: "group.member_removed", targetType: "conversation", targetId: conv.id });
   });

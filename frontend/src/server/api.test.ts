@@ -260,7 +260,7 @@ describe("Connections & messaging (M09, M10, D-05)", () => {
     expect((await a.client.post(`/events/${eventId}/connections`, { profileId: b.profileId })).body.code).toBe("request_pending");
     expect((await b.client.post(`/events/${eventId}/connections`, { profileId: a.profileId })).body.code).toBe("incoming_request");
     expect((await b.client.get("/me/unread-counts")).body.requests).toBe(1);
-    expect((await b.client.get("/me/notifications")).body.items[0].type).toBe("connection_request");
+    expect((await b.client.get("/me/notifications")).body.items[0]).toMatchObject({ type: "connection.request", category: "connections", link: "/app/connections" });
     expect((await a.client.post(`/connections/${req.body.id}/accept`)).status).toBe(404); // only addressee
     const acc = await b.client.post(`/connections/${req.body.id}/accept`);
     expect(acc.body.conversationId).toBeTruthy();

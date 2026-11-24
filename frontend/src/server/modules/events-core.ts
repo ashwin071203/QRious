@@ -22,10 +22,15 @@ const DEFAULT_SETTINGS = (eventId: string): Settings => ({
 export async function syncStatuses(db: Executor, ids?: string[]) {
   const now = new Date();
   const scope = ids?.length ? inArray(events.id, ids) : sql`true`;
-  await db.update(events).set({ status: "ended", endedAt: now, updatedAt: now })
-    .where(and(scope, inArray(events.status, ["published", "active", "networking_paused"]), sql`${events.endsAt} <= ${now}`));
-  await db.update(events).set({ status: "active", activatedAt: now, updatedAt: now })
-    .where(and(scope, eq(events.status, "published"), sql`${events.startsAt} - interval '24 hours' <= ${now}`, sql`${events.endsAt} > ${now}`));
+  const ended = await db.update(events).set({ status: "ended", endedAt: now, updatedAt: now })
+    .where(and(scope, inArray(events.status, ["published", "active", "networking_paused"]), sql`${events.endsAt} <= ${now}`)).returning({ id: events.id });
+  const opened = await db.update(events).set({ status: "active", activatedAt: now, updatedAt: now })
+    .where(and(scope, eq(events.status, "published"), sql`${events.startsAt} - interval '24 hours' <= ${now}`, sql`${events.endsAt} > ${now}`)).returning({ id: events.id });
+  if (ended.length || opened.length) {
+    const { eventLifecycle } = await import("@/server/notifications/rules");
+    for (const e of opened) await eventLifecycle(db, e.id, "networking_open");
+    for (const e of ended) await eventLifecycle(db, e.id, "ended");
+  }
 }
 
 export async function loadEvents(db: Executor, ids: string[]): Promise<EventFull[]> {
@@ -84,7 +89,14 @@ export async function resolveQr(code: string) {
   const ev = await loadEvent(db, qr.eventId);
   const base = { code: qr.publicCode, qrCodeId: qr.id };
   if (!ev || !isPubliclyVisible(ev)) return { ...base, state: "event_unavailable" as const, event: null, full: null };
-  if (qr.status === "revoked") return { ...base, state: "revoked" as const, event: null, full: null };
+  if (qr.status === "revoked") {
+    // Someone is using an old printout of a live event: tell the organizer (at most once a day per event).
+    if (["published", "active", "networking_paused"].includes(ev.status)) {
+      const { staleQrScanned } = await import("@/server/notifications/rules");
+      await staleQrScanned(db, ev.id).catch(() => {});
+    }
+    return { ...base, state: "revoked" as const, event: null, full: null };
+  }
   if (qr.expiresAt && qr.expiresAt <= new Date()) return { ...base, state: "expired" as const, event: null, full: null };
   if (!ev.qrAccessEnabled) return { ...base, state: "disabled" as const, event: publicEventDto(ev), full: ev };
   if (ev.status === "archived") return { ...base, state: "event_unavailable" as const, event: publicEventDto(ev), full: ev };

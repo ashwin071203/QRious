@@ -1,7 +1,7 @@
 import "server-only";
 import QRCode from "qrcode";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
-import { schema, type Executor } from "@/server/db";
+import { schema } from "@/server/db";
 import { AppError, FieldErrors, conflict, notFound } from "@/server/core/errors";
 import type { Ctx } from "@/server/core/http";
 import { isUuid, reply } from "@/server/core/http";
@@ -12,10 +12,11 @@ import { requireOrgMember } from "./organizers";
 import { loadEvent, publicEventDto, syncStatuses, type EventFull } from "./events-core";
 import { intentionsForCategory } from "./taxonomy";
 import { computePulse } from "./pulse";
-import { allocateEventAllowance, orgHas, requireOrgFeature } from "./entitlements";
+import { allocateEventAllowance, orgEntitlements, orgHas, requireOrgFeature } from "./entitlements";
+import * as rules from "@/server/notifications/rules";
 
 const { organizations, organizationEventCredits, events, eventCategories, eventQrCodes, eventNetworkingSettings, eventSuggestedInterests, eventSuggestedSkills, eventIntentions, eventParticipants,
-  interests, skills, userReports, notifications } = schema;
+  interests, skills, userReports } = schema;
 
 export function siteOrigin(ctx: Ctx) {
   const env = process.env.NEXT_PUBLIC_SITE_URL;
@@ -108,6 +109,8 @@ export async function createEvent(ctx: Ctx) {
     const defaults = await intentionsForCategory(tx, f.categoryId!);
     if (defaults.length) await tx.insert(eventIntentions).values(defaults.map((i, n) => ({ eventId: ev!.id, intentionId: i.id, sortOrder: n })));
     await audit(tx, { actorType: "organizer", actorId: organizer.userId, action: "event.created", targetType: "event", targetId: ev!.id, organizationId: ctx.params.orgId, eventId: ev!.id, data: { allowance: allowance.source } });
+    const ent = await orgEntitlements(tx, ctx.params.orgId!);
+    await rules.eventCreated(tx, ev!.id, organizer.userId, ent.allowance.eventsCreated, ent.allowance.unlimited, ent.allowance.credits);
     return ev!.id;
   });
   return reply(201, { id });
@@ -151,6 +154,11 @@ export async function updateEvent(ctx: Ctx) {
   if (event.status === "ended" && f.endsAt && f.endsAt > new Date()) patch.status = "published";
   await ctx.db.update(events).set(patch).where(eq(events.id, event.id));
   await audit(ctx.db, { actorType: "organizer", actorId: organizer.userId, action: "event.updated", targetType: "event", targetId: event.id, organizationId: event.organizationId, eventId: event.id, data: { fields: Object.keys(f) } });
+  const changed = Object.keys(f).filter((k) => {
+    const before = (event as Record<string, unknown>)[k], after = (f as Record<string, unknown>)[k];
+    return before instanceof Date && after instanceof Date ? before.getTime() !== after.getTime() : before !== after;
+  });
+  if (event.status !== "draft") await rules.eventChanged(ctx.db, event.id, changed);
   return eventDetail(ctx, (await loadEvent(ctx.db, event.id))!);
 }
 
@@ -182,15 +190,6 @@ export async function removeBanner(ctx: Ctx) {
   await ctx.db.update(events).set({ bannerUrl: null, bannerKey: null }).where(eq(events.id, event.id));
   await removeMedia([event.bannerUrl]);
   return reply(204);
-}
-
-/** Notify all active participants (respecting preferences) — e.g. pause/resume/end. */
-async function notifyParticipants(db: Executor, eventId: string, message: string) {
-  await db.execute(sql`INSERT INTO notifications (attendee_id, type, event_id, payload)
-    SELECT ep.attendee_id, 'event_update', ${eventId}, ${JSON.stringify({ message })}::jsonb FROM event_participants ep
-    JOIN attendees a ON a.id = ep.attendee_id AND a.status = 'active'
-    LEFT JOIN notification_preferences np ON np.attendee_id = ep.attendee_id
-    WHERE ep.event_id = ${eventId} AND ep.status = 'active' AND coalesce(np.event_updates, true)`);
 }
 
 type Transition = "publish" | "unpublish" | "pause" | "resume" | "start" | "end" | "archive";
@@ -228,9 +227,8 @@ export async function transition(ctx: Ctx, action: Transition) {
       if (!qr) await tx.insert(eventQrCodes).values({ eventId: event.id, publicCode: newQrCode(), createdBy: organizer.userId });
       await syncStatuses(tx, [event.id]);
     }
-    const msgs: Partial<Record<Transition, string>> = { pause: `Networking at ${event.name} is paused for now.`, resume: `Networking at ${event.name} is back on.`,
-      start: `Networking at ${event.name} is now open!`, end: `${event.name} has ended. Your connections and chats stay with you.` };
-    if (msgs[action]) await notifyParticipants(tx, event.id, msgs[action]!);
+    const what: Record<Transition, rules.Lifecycle> = { publish: "published", start: "networking_open", pause: "paused", resume: "resumed", end: "ended", unpublish: "unpublished", archive: "archived" };
+    await rules.eventLifecycle(tx, event.id, what[action], organizer.userId);
     await audit(tx, { actorType: "organizer", actorId: organizer.userId, action: `event.${action}`, targetType: "event", targetId: event.id, organizationId: event.organizationId, eventId: event.id });
   });
   return eventDetail(ctx, (await loadEvent(ctx.db, event.id))!);
@@ -319,6 +317,7 @@ export async function regenerateQr(ctx: Ctx) {
     await tx.update(eventQrCodes).set({ status: "revoked", revokedAt: new Date(), revokedBy: organizer.userId }).where(and(eq(eventQrCodes.eventId, event.id), eq(eventQrCodes.status, "active")));
     await tx.insert(eventQrCodes).values({ eventId: event.id, publicCode: newQrCode(), createdBy: organizer.userId });
     await audit(tx, { actorType: "organizer", actorId: organizer.userId, action: "qr.regenerated", targetType: "event", targetId: event.id, organizationId: event.organizationId, eventId: event.id });
+    await rules.qrChanged(tx, event.id, "regenerated", organizer.userId);
   });
   return eventDetail(ctx, (await loadEvent(ctx.db, event.id))!);
 }
@@ -327,6 +326,7 @@ export async function revokeQr(ctx: Ctx) {
   const { event, organizer } = await ownedEvent(ctx);
   await ctx.db.update(eventQrCodes).set({ status: "revoked", revokedAt: new Date(), revokedBy: organizer.userId }).where(and(eq(eventQrCodes.eventId, event.id), eq(eventQrCodes.status, "active")));
   await audit(ctx.db, { actorType: "organizer", actorId: organizer.userId, action: "qr.revoked", targetType: "event", targetId: event.id, organizationId: event.organizationId, eventId: event.id });
+  await rules.qrChanged(ctx.db, event.id, "revoked", organizer.userId);
   return eventDetail(ctx, (await loadEvent(ctx.db, event.id))!);
 }
 
@@ -336,6 +336,7 @@ export async function setQrAccess(ctx: Ctx) {
   if (typeof b.enabled !== "boolean") throw new AppError(400, "validation_failed", "enabled must be true or false.");
   await ctx.db.update(events).set({ qrAccessEnabled: b.enabled, updatedAt: new Date() }).where(eq(events.id, event.id));
   await audit(ctx.db, { actorType: "organizer", actorId: organizer.userId, action: b.enabled ? "qr.enabled" : "qr.disabled", targetType: "event", targetId: event.id, organizationId: event.organizationId, eventId: event.id });
+  if (b.enabled !== event.qrAccessEnabled) await rules.qrChanged(ctx.db, event.id, b.enabled ? "resumed" : "paused", organizer.userId);
   return eventDetail(ctx, (await loadEvent(ctx.db, event.id))!);
 }
 
@@ -393,7 +394,7 @@ export async function removeParticipant(ctx: Ctx, restore = false) {
       const reason = cleanText(b.reason)?.slice(0, 500) ?? null;
       await tx.update(eventParticipants).set({ status: "removed", removedAt: new Date(), removedBy: organizer.userId, removalReason: reason }).where(eq(eventParticipants.id, p.id));
       if (p.status === "active") await tx.update(events).set({ participantCount: sql`greatest(${events.participantCount} - 1, 0)` }).where(eq(events.id, event.id));
-      await tx.insert(notifications).values({ attendeeId: p.attendeeId, type: "event_update", eventId: event.id, payload: { message: `You were removed from ${event.name} by the organizer.` } });
+      await rules.participantRemoved(tx, event.id, p.attendeeId);
     }
     await audit(tx, { actorType: "organizer", actorId: organizer.userId, action: restore ? "participant.restored" : "participant.removed", targetType: "participant", targetId: p.id, organizationId: event.organizationId, eventId: event.id });
   });

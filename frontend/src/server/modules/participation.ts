@@ -46,6 +46,9 @@ export async function joinInTx(tx: Executor, attendeeId: string, eventId: string
   }
   await tx.update(events).set({ participantCount: sql`${events.participantCount} + 1`, updatedAt: now }).where(eq(events.id, eventId));
   await recordActivity(tx, eventId, "join");
+  const [prof] = (await tx.execute<{ id: string }>(sql`SELECT id FROM user_profiles WHERE attendee_id = ${attendeeId}`)).rows;
+  const { participantJoined } = await import("@/server/notifications/rules");
+  await participantJoined(tx, eventId, attendeeId, prof?.id ?? null);
   return { eventId, alreadyJoined: false, redirectTo: eventHomePath(eventId) };
 }
 

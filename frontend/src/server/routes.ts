@@ -13,6 +13,9 @@ import * as matching from "./modules/matching";
 import * as pulse from "./modules/pulse";
 import * as social from "./modules/social";
 import * as groups from "./modules/groups";
+import * as notif from "./notifications/api";
+import * as rules from "./notifications/rules";
+import "./notifications/push"; // registers after-response push delivery
 import * as organizers from "./modules/organizers";
 import * as ev from "./modules/events-admin";
 import * as admin from "./modules/admin";
@@ -65,7 +68,12 @@ const routes: Route[] = [
     if (ctx.params.sessionId === me.sessionId) ctx.clearCookie(identity.ATTENDEE_COOKIE);
     return reply(204);
   }),
-  R("POST", "/me/sessions/revoke-others", async (ctx) => { const me = await identity.requireAttendee(ctx); return { revoked: await identity.revokeAllSessions(ctx.db, me.attendeeId, "user_revoked", me.sessionId) }; }),
+  R("POST", "/me/sessions/revoke-others", async (ctx) => {
+    const me = await identity.requireAttendee(ctx);
+    const revoked = await identity.revokeAllSessions(ctx.db, me.attendeeId, "user_revoked", me.sessionId);
+    if (revoked) await rules.security(ctx.db, { attendeeId: me.attendeeId }, "sessions_revoked", `Signed out of ${revoked} other device${revoked === 1 ? "" : "s"}`, null, "/app/settings");
+    return { revoked };
+  }),
   R("GET", "/me/recovery-code/status", async (ctx) => {
     const me = await identity.requireAttendee(ctx);
     const [active] = await ctx.db.select({ createdAt: schema.attendeeRecoveryCodes.createdAt }).from(schema.attendeeRecoveryCodes)
@@ -75,7 +83,11 @@ const routes: Route[] = [
   R("POST", "/me/recovery-code/regenerate", async (ctx) => {
     const me = await identity.requireAttendee(ctx);
     await ctx.limit("recovery-regen", 10, 3600, `att:${me.attendeeId}`);
-    return { recoveryCode: await ctx.db.transaction((tx) => identity.issueRecoveryCode(tx, me.attendeeId, "rotated")) };
+    return { recoveryCode: await ctx.db.transaction(async (tx) => {
+      const code = await identity.issueRecoveryCode(tx, me.attendeeId, "rotated");
+      await rules.security(tx, { attendeeId: me.attendeeId }, "recovery_code_changed", "Your recovery code was changed", "Your old code no longer works.", "/app/settings");
+      return code;
+    }) };
   }),
 
   // ---------- Profile & privacy (M03, M12) ----------
@@ -92,8 +104,8 @@ const routes: Route[] = [
   R("GET", "/me/deletion-request", profiles.deletionStatus),
   R("POST", "/me/deletion-request", profiles.requestDeletion),
   R("DELETE", "/me/deletion-request", profiles.cancelDeletion),
-  R("GET", "/me/notification-preferences", social.getPreferences),
-  R("PUT", "/me/notification-preferences", social.putPreferences),
+  R("GET", "/me/notification-settings", notif.getSettings("attendee")),
+  R("PUT", "/me/notification-settings", notif.putSettings("attendee")),
 
   // ---------- Participation & availability (M04, M08) ----------
   R("GET", "/me/events", participation.myEvents),
@@ -138,9 +150,25 @@ const routes: Route[] = [
   R("POST", "/conversations/:id/read", social.markRead),
   R("POST", "/conversations/:id/typing", social.typing),
   R("GET", "/me/unread-counts", social.unreadCounts),
-  R("GET", "/me/notifications", social.listNotifications),
-  R("POST", "/me/notifications/read-all", social.markAllNotificationsRead),
-  R("POST", "/me/notifications/:id/read", social.markNotificationRead),
+  R("GET", "/me/notifications", notif.list("attendee")),
+  R("POST", "/me/notifications/read-all", notif.markAllRead("attendee")),
+  R("POST", "/me/notifications/:id/read", notif.markRead("attendee")),
+  R("DELETE", "/me/notifications", notif.clearAll("attendee")),
+  R("DELETE", "/me/notifications/:id", notif.clearOne("attendee")),
+  R("POST", "/me/push-subscriptions", notif.subscribe("attendee")),
+  R("DELETE", "/me/push-subscriptions", notif.unsubscribe("attendee")),
+  R("GET", "/push/config", notif.pushPublicConfig),
+  // Organizer notification centre
+  R("GET", "/organizer/notifications", notif.list("organizer")),
+  R("GET", "/organizer/notifications/unread", notif.unreadCount("organizer")),
+  R("POST", "/organizer/notifications/read-all", notif.markAllRead("organizer")),
+  R("POST", "/organizer/notifications/:id/read", notif.markRead("organizer")),
+  R("DELETE", "/organizer/notifications", notif.clearAll("organizer")),
+  R("DELETE", "/organizer/notifications/:id", notif.clearOne("organizer")),
+  R("GET", "/organizer/notification-settings", notif.getSettings("organizer")),
+  R("PUT", "/organizer/notification-settings", notif.putSettings("organizer")),
+  R("POST", "/organizer/push-subscriptions", notif.subscribe("organizer")),
+  R("DELETE", "/organizer/push-subscriptions", notif.unsubscribe("organizer")),
   R("GET", "/me/blocks", social.listBlocks),
   R("PUT", "/me/blocks/:profileId", social.block),
   R("DELETE", "/me/blocks/:profileId", social.unblock),
@@ -245,6 +273,7 @@ const routes: Route[] = [
     return billing.linkGatewayPlan(ctx, a.userId, ctx.params.code!, b.gatewayPlanId);
   }),
   R("POST", "/admin/promotional-access", admin.grantPromotion),
+  R("POST", "/admin/announcements", notif.adminAnnouncement),
   R("POST", "/admin/promotional-access/:id/revoke", admin.revokePromotion),
   R("POST", "/admin/event-credits/:id/revoke", admin.revokeEventCredit),
 

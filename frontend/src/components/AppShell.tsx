@@ -1,5 +1,6 @@
 "use client";
 
+import { NotificationBridge } from "@/components/notifications/Notifications";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
@@ -35,7 +36,7 @@ export function RequireAttendee({ children }: { children: ReactNode }) {
     );
   }
   if (data?.status === "deactivated" && !pathname.startsWith("/app/settings")) return <PendingDeletion />;
-  return <>{children}</>;
+  return <><NotificationBridge role="attendee" />{children}</>;
 }
 
 function PendingDeletion() {

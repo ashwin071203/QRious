@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { KeyRound, Lock, Shield } from "lucide-react";
+import { Bell, KeyRound, Lock, Shield } from "lucide-react";
+import { NotificationSettingsPanel } from "@/components/notifications/Notifications";
 import { useOrg } from "@/components/OrganizerShell";
 import { Button } from "@/components/ui/Button";
 import { Field, Input } from "@/components/ui/Form";
@@ -68,6 +69,10 @@ export default function AccountPage() {
             </div>
           </section>
         )}
+        <section id="notifications" className="card scroll-mt-20 space-y-4 p-5 lg:col-span-2">
+          <h2 className="flex items-center gap-2 font-display font-semibold"><Bell className="size-4 text-accent" />Notifications</h2>
+          <NotificationSettingsPanel role="organizer" />
+        </section>
       </div>
     </>
   );

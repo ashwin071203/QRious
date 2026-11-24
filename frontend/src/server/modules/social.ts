@@ -10,74 +10,14 @@ import { requireAttendee } from "./identity";
 import { getParticipant, recordActivity, requireParticipant, sharedEventIds } from "./participation";
 import { isNetworkingOpen, loadEvent, loadEvents } from "./events-core";
 import { isBlockedEitherWay } from "./discovery";
+import { notify, toAttendee } from "@/server/notifications/notify";
+import { connectionMilestone } from "@/server/notifications/rules";
 
-const { connections, connectionHistory, conversations, conversationMembers, messages, notifications, notificationPreferences, userBlocks, userReports, userProfiles, attendees } = schema;
+const { connections, connectionHistory, conversations, conversationMembers, messages, notifications, userBlocks, userReports, userProfiles, attendees } = schema;
 
 const pair = (a: string, b: string): [string, string] => (a < b ? [a, b] : [b, a]);
 
-// ---------- Notifications (M11) ----------
-type NType = (typeof schema.NOTIFICATION_TYPE)[number];
-const PREF: Partial<Record<NType, keyof typeof notificationPreferences.$inferSelect>> = {
-  connection_request: "connectionRequests", connection_accepted: "connectionAccepted", message: "messages", event_update: "eventUpdates", billing: "billing",
-};
-
-export async function notify(db: Executor, attendeeId: string, type: NType, payload: Record<string, unknown>, opts: { eventId?: string | null; actorProfileId?: string | null; entityId?: string | null } = {}) {
-  const key = PREF[type];
-  if (key) {
-    const [p] = await db.select().from(notificationPreferences).where(eq(notificationPreferences.attendeeId, attendeeId)).limit(1);
-    if (p && p[key] === false) return;
-  }
-  if (type === "message" && opts.entityId) {
-    // Coalesce: one unread message notification per conversation.
-    const updated = await db.update(notifications).set({ payload, createdAt: new Date(), actorProfileId: opts.actorProfileId ?? null })
-      .where(and(eq(notifications.attendeeId, attendeeId), eq(notifications.type, "message"), eq(notifications.entityId, opts.entityId), isNull(notifications.readAt)))
-      .returning({ id: notifications.id });
-    if (updated.length) return;
-  }
-  await db.insert(notifications).values({ attendeeId, type, payload, eventId: opts.eventId ?? null, actorProfileId: opts.actorProfileId ?? null, entityId: opts.entityId ?? null });
-}
-
-export async function listNotifications(ctx: Ctx) {
-  const me = await requireAttendee(ctx);
-  const before = ctx.query("before");
-  const rows = await ctx.db.select({ n: notifications, actorName: userProfiles.displayName, actorThumb: userProfiles.thumbUrl })
-    .from(notifications).leftJoin(userProfiles, eq(userProfiles.id, notifications.actorProfileId))
-    .where(and(eq(notifications.attendeeId, me.attendeeId), before ? sql`${notifications.createdAt} < ${new Date(before)}` : sql`true`))
-    .orderBy(desc(notifications.createdAt)).limit(30);
-  return {
-    items: rows.map((r) => ({ id: r.n.id, type: r.n.type, payload: r.n.payload, eventId: r.n.eventId, entityId: r.n.entityId, createdAt: r.n.createdAt, readAt: r.n.readAt,
-      actor: r.n.actorProfileId ? { id: r.n.actorProfileId, displayName: r.actorName, thumbnailUrl: r.actorThumb } : null })),
-    nextCursor: rows.length === 30 ? rows[29]!.n.createdAt.toISOString() : null,
-  };
-}
-
-export async function markNotificationRead(ctx: Ctx) {
-  const me = await requireAttendee(ctx);
-  await ctx.db.update(notifications).set({ readAt: new Date() }).where(and(eq(notifications.id, ctx.params.id!), eq(notifications.attendeeId, me.attendeeId), isNull(notifications.readAt)));
-  return reply(204);
-}
-
-export async function markAllNotificationsRead(ctx: Ctx) {
-  const me = await requireAttendee(ctx);
-  await ctx.db.update(notifications).set({ readAt: new Date() }).where(and(eq(notifications.attendeeId, me.attendeeId), isNull(notifications.readAt)));
-  return reply(204);
-}
-
-export async function getPreferences(ctx: Ctx) {
-  const me = await requireAttendee(ctx);
-  const [p] = await ctx.db.select().from(notificationPreferences).where(eq(notificationPreferences.attendeeId, me.attendeeId)).limit(1);
-  const d = p ?? { connectionRequests: true, connectionAccepted: true, messages: true, eventUpdates: true, billing: true };
-  return { connectionRequests: d.connectionRequests, connectionAccepted: d.connectionAccepted, messages: d.messages, eventUpdates: d.eventUpdates, billing: d.billing };
-}
-
-export async function putPreferences(ctx: Ctx) {
-  const me = await requireAttendee(ctx);
-  const b = await ctx.json<Record<string, unknown>>();
-  const v = (k: string) => (typeof b[k] === "boolean" ? (b[k] as boolean) : true);
-  const row = { connectionRequests: v("connectionRequests"), connectionAccepted: v("connectionAccepted"), messages: v("messages"), eventUpdates: v("eventUpdates"), billing: v("billing"), updatedAt: new Date() };
-  await ctx.db.insert(notificationPreferences).values({ attendeeId: me.attendeeId, ...row }).onConflictDoUpdate({ target: notificationPreferences.attendeeId, set: row });
-  return getPreferences(ctx);
-}
+// ---------- Notifications: see server/notifications (one system for attendees and organizers) ----------
 
 export async function unreadCounts(ctx: Ctx) {
   const me = await requireAttendee(ctx, { allowDeactivated: true });
@@ -144,7 +84,9 @@ export async function requestConnection(ctx: Ctx) {
         originEventId: event.id, introMessage: intro, requestedAt: new Date() }).returning();
       await history(tx, c!.id, me.attendeeId, "requested", null, "pending");
       const [mine] = await tx.select({ name: userProfiles.displayName }).from(userProfiles).where(eq(userProfiles.id, me.profileId)).limit(1);
-      await notify(tx, target.attendeeId, "connection_request", { message: `${mine?.name ?? "Someone"} wants to connect`, intro, eventName: event.name }, { eventId: event.id, actorProfileId: me.profileId, entityId: c!.id });
+      await notify(tx, toAttendee(target.attendeeId), { type: "connection.request", category: "connections", title: `${mine?.name ?? "Someone"} wants to connect`,
+        body: intro ? `“${intro.slice(0, 120)}” · ${event.name}` : `Met at ${event.name}`, link: "/app/connections", eventId: event.id, actorProfileId: me.profileId,
+        actorAttendeeId: me.attendeeId, entityId: c!.id, dedupeKey: `connection:${c!.id}` });
       return c!;
     });
     return reply(201, { id: c.id, status: c.status });
@@ -180,7 +122,12 @@ export async function respondConnection(ctx: Ctx, action: "accept" | "decline" |
     if (action !== "accept") return null;
     await recordActivity(tx, c.originEventId, "connection_accepted");
     const [mine] = await tx.select({ name: userProfiles.displayName }).from(userProfiles).where(eq(userProfiles.id, me.profileId)).limit(1);
-    await notify(tx, other, "connection_accepted", { message: `${mine?.name ?? "Someone"} accepted your request` }, { eventId: c.originEventId, actorProfileId: me.profileId, entityId: c.id });
+    await notify(tx, toAttendee(other), { type: "connection.accepted", category: "connections", title: `${mine?.name ?? "Someone"} accepted your request`,
+      body: "You can message each other now.", link: `/app/people/${me.profileId}`, eventId: c.originEventId, actorProfileId: me.profileId, actorAttendeeId: me.attendeeId,
+      entityId: c.id, dedupeKey: `connection:${c.id}` });
+    // The request's own notification is resolved: mark it read for the person who accepted.
+    await tx.update(notifications).set({ readAt: new Date() }).where(and(eq(notifications.attendeeId, me.attendeeId), eq(notifications.dedupeKey, `connection:${c.id}`), isNull(notifications.readAt)));
+    await connectionMilestone(tx, c.originEventId);
     // Conversation is created on acceptance when the origin event allows messaging (D-05).
     const ev = await loadEvent(tx, c.originEventId);
     if (ev?.settings.messagingEnabled) return (await ensureConversation(tx, c.id, me.attendeeId, other, c.originEventId)).id;
@@ -474,14 +421,15 @@ export async function sendMessage(ctx: Ctx) {
         .where(and(eq(conversationMembers.conversationId, conv.id), eq(conversationMembers.attendeeId, me.attendeeId)));
       const [mine] = await tx.select({ name: userProfiles.displayName }).from(userProfiles).where(eq(userProfiles.id, me.profileId)).limit(1);
       if (other) {
-        await notify(tx, other, "message", { message: `New message from ${mine?.name ?? "a connection"}`, preview: text.slice(0, 80) }, { actorProfileId: me.profileId, entityId: conv.id });
+        await notify(tx, toAttendee(other), { type: "message.new", category: "messages", title: mine?.name ?? "New message", body: text.slice(0, 140), link: `/app/messages/${conv.id}`,
+          actorProfileId: me.profileId, actorAttendeeId: me.attendeeId, entityId: conv.id, dedupeKey: `conv:${conv.id}` });
         if (conv.originEventId) await recordActivity(tx, conv.originEventId, "message_sent");
       } else {
         const blocked = await blockedWith(tx, me.attendeeId);
         const recipients = (await tx.select({ id: conversationMembers.attendeeId }).from(conversationMembers).where(eq(conversationMembers.conversationId, conv.id)))
           .map((r) => r.id).filter((id) => id !== me.attendeeId && !blocked.has(id));
-        for (const r of recipients)
-          await notify(tx, r, "message", { message: `${mine?.name ?? "Someone"} in ${conv.name}`, preview: text.slice(0, 80), group: true }, { actorProfileId: me.profileId, entityId: conv.id });
+        await notify(tx, recipients.map(toAttendee), { type: "group.message", category: "groups", title: conv.name ?? "Group", body: `${mine?.name ?? "Someone"}: ${text.slice(0, 120)}`,
+          link: `/app/messages/${conv.id}`, actorProfileId: me.profileId, actorAttendeeId: me.attendeeId, entityId: conv.id, dedupeKey: `conv:${conv.id}` });
       }
     }
     return m;
@@ -500,7 +448,7 @@ export async function markRead(ctx: Ctx) {
   await ctx.db.update(conversationMembers).set({ lastReadMessageId: sql`greatest(${conversationMembers.lastReadMessageId}, ${capped})`, lastReadAt: new Date() })
     .where(and(eq(conversationMembers.conversationId, conv.id), eq(conversationMembers.attendeeId, me.attendeeId)));
   await ctx.db.update(notifications).set({ readAt: new Date() })
-    .where(and(eq(notifications.attendeeId, me.attendeeId), eq(notifications.type, "message"), eq(notifications.entityId, conv.id), isNull(notifications.readAt)));
+    .where(and(eq(notifications.attendeeId, me.attendeeId), eq(notifications.dedupeKey, `conv:${conv.id}`), isNull(notifications.readAt)));
   return reply(204);
 }
 

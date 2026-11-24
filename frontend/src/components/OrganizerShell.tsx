@@ -6,7 +6,9 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from "
 import { AnimatePresence, motion } from "motion/react";
 import { useLocal, writeLocal } from "@/lib/client-store";
 import { useQueryClient } from "@tanstack/react-query";
-import { Building2, CalendarDays, CreditCard, LayoutDashboard, Loader2, LogOut, Menu, QrCode, Settings2, Shield, UserCog, Users, X } from "lucide-react";
+import { Bell, Building2, CalendarDays, CreditCard, LayoutDashboard, Loader2, LogOut, Menu, QrCode, Settings2, Shield, UserCog, Users, X } from "lucide-react";
+import { NotificationBridge, useOrgUnread } from "@/components/notifications/Notifications";
+import { disablePush } from "@/lib/push";
 import { Logo } from "@/components/ui/Misc";
 import { Button } from "@/components/ui/Button";
 import { api } from "@/lib/api";
@@ -19,7 +21,8 @@ const Ctx = createContext<OrgCtx | null>(null);
 export const useOrg = () => useContext(Ctx)!;
 const ORG_KEY = "qrious:orgId";
 
-type NavItem = { href: string; label: string; short?: string; icon: ReactNode };
+type NavItem = { href: string; label: string; short?: string; icon: ReactNode; badge?: number };
+const CountBadge = ({ n, className }: { n?: number; className?: string }) => (n ? <span aria-hidden className={cn("min-w-5 rounded-full bg-pink px-1.5 text-center text-[11px] leading-5 font-bold text-bg", className)}>{n > 99 ? "99+" : n}</span> : null);
 const isActive = (pathname: string, href: string) => pathname === href || pathname.startsWith(`${href}/`);
 
 /** Organizer area guard + shell (PRD §6). Authorization is enforced by the API on every call. */
@@ -31,6 +34,7 @@ export function OrganizerShell({ children }: { children: ReactNode }) {
   const saved = useLocal(ORG_KEY);
   const [moreOpen, setMoreOpen] = useState(false);
   const [moreFor, setMoreFor] = useState(pathname);
+  const unread = useOrgUnread(!!data?.authenticated).data?.notifications ?? 0;
   const orgs = data?.organizations ?? [];
   const orgId = (orgs.find((o) => o.id === saved) ?? orgs[0])?.id ?? null;
 
@@ -64,6 +68,7 @@ export function OrganizerShell({ children }: { children: ReactNode }) {
     { href: "/organizer/qr", label: "QR Management", short: "QR", icon: <QrCode className="size-5" /> },
     { href: "/organizer/participants", label: "Participants", short: "People", icon: <Users className="size-5" /> },
     { href: "/organizer/networking", label: "Networking", icon: <Settings2 className="size-5" /> },
+    { href: "/organizer/notifications", label: "Notifications", icon: <Bell className="size-5" />, badge: unread },
     { href: "/organizer/organization", label: "Organization", icon: <Building2 className="size-5" /> },
     { href: "/organizer/billing", label: "Billing & Plans", icon: <CreditCard className="size-5" /> },
     { href: "/organizer/account", label: "Account", icon: <UserCog className="size-5" /> },
@@ -76,6 +81,7 @@ export function OrganizerShell({ children }: { children: ReactNode }) {
   const orgName = orgs.find((o) => o.id === orgId)?.name;
 
   async function logout() {
+    await disablePush("organizer").catch(() => {}); // shared devices: stop pushes for this account here
     await api("/organizer/auth/logout", { method: "POST" }).catch(() => {});
     qc.clear();
     router.replace("/organizer/login");
@@ -90,6 +96,7 @@ export function OrganizerShell({ children }: { children: ReactNode }) {
 
   return (
     <Ctx.Provider value={{ me: data, orgId, setOrgId }}>
+      <NotificationBridge role="organizer" />
       <div className="min-h-dvh bg-bg lg:grid lg:grid-cols-[260px_1fr]">
         {/* Desktop sidebar */}
         <aside className="hidden border-r border-line bg-gradient-to-b from-[#1d1235] to-bg-2 lg:sticky lg:top-0 lg:flex lg:h-dvh lg:flex-col">
@@ -99,10 +106,10 @@ export function OrganizerShell({ children }: { children: ReactNode }) {
             {nav.map((n) => {
               const active = isActive(pathname, n.href);
               return (
-                <Link key={n.href} href={n.href} aria-current={active ? "page" : undefined}
+                <Link key={n.href} href={n.href} aria-current={active ? "page" : undefined} aria-label={n.badge ? `${n.label}, ${n.badge} unread` : undefined}
                   className={cn("relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-colors", active ? "text-text" : "text-text-2 hover:bg-white/5 hover:text-text")}>
                   {active && <motion.span layoutId="org-side-pill" className="absolute inset-0 rounded-xl bg-primary/20" transition={{ type: "spring", stiffness: 500, damping: 40 }} />}
-                  <span className="relative">{n.icon}</span><span className="relative">{n.label}</span>
+                  <span className="relative">{n.icon}</span><span className="relative flex-1">{n.label}</span><CountBadge n={n.badge} className="relative" />
                 </Link>
               );
             })}
@@ -125,6 +132,10 @@ export function OrganizerShell({ children }: { children: ReactNode }) {
               </AnimatePresence>
               {orgName && <p className="truncate text-xs text-text-2">{orgName}</p>}
             </div>
+            <Link href="/organizer/notifications" aria-label={unread ? `Notifications, ${unread} unread` : "Notifications"}
+              className="relative rounded-xl p-2 text-text-2 hover:bg-white/5 hover:text-text">
+              <Bell className="size-5" /><CountBadge n={unread} className="absolute -top-0.5 -right-0.5 min-w-4 px-1 text-[10px] leading-4" />
+            </Link>
           </header>
 
           <main className="mx-auto max-w-6xl px-4 pt-6 pb-[calc(6rem+env(safe-area-inset-bottom))] lg:px-8 lg:pb-10">{children}</main>
@@ -181,7 +192,7 @@ export function OrganizerShell({ children }: { children: ReactNode }) {
                     <motion.li key={n.href} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.03 * i }}>
                       <Link href={n.href} aria-current={active ? "page" : undefined}
                         className={cn("flex items-center gap-3 rounded-2xl border px-3.5 py-3.5 text-sm", active ? "border-primary/60 bg-primary/15 text-text" : "border-line bg-card text-text-2")}>
-                        <span className="text-accent-light">{n.icon}</span>{n.label}
+                        <span className="text-accent-light">{n.icon}</span><span className="flex-1">{n.label}</span><CountBadge n={n.badge} />
                       </Link>
                     </motion.li>
                   );

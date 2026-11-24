@@ -12,6 +12,9 @@ export const metadata: Metadata = {
   description:
     "Scan the event QR, discover the people around you, and make meaningful connections — at concerts, weddings, college fests, conferences and more. No app install needed.",
   applicationName: "QRious",
+  // iOS shows web push only for apps added to the Home Screen (iOS 16.4+).
+  appleWebApp: { capable: true, title: "QRious", statusBarStyle: "black-translucent" },
+  icons: { icon: "/icons/icon-192.png", apple: "/icons/apple-touch-icon.png" },
 };
 
 export const viewport: Viewport = {

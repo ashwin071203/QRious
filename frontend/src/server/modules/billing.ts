@@ -10,8 +10,9 @@ import { audit } from "@/server/core/platform";
 import { requireAttendee } from "./identity";
 import { requireOrgMember } from "./organizers";
 import { orgEntitlements } from "./entitlements";
+import { billingEvent, type BillingEvent } from "@/server/notifications/rules";
 
-const { subscriptionPlans, subscriptionFeatures, subscriptions, payments, paymentWebhooks, userEntitlements, organizationEntitlements, promotionalAccess, notifications, organizationEventCredits, events } = schema;
+const { subscriptionPlans, subscriptionFeatures, subscriptions, payments, paymentWebhooks, userEntitlements, organizationEntitlements, promotionalAccess, organizationEventCredits, events } = schema;
 
 /**
  * Entitlements (D-01, D-20). Essential networking is NEVER gated. Effective features = default plan overlaid with
@@ -170,6 +171,7 @@ export async function cancelSubscription(ctx: Ctx) {
   // Access continues until the end of the paid period (§19.6).
   await ctx.db.update(subscriptions).set({ cancelAtPeriodEnd: true, updatedAt: new Date() }).where(eq(subscriptions.id, sub.id));
   await audit(ctx.db, { actorType: "attendee", actorId: me.attendeeId, action: "billing.subscription_cancel_requested", targetType: "subscription", targetId: sub.id });
+  await billingEvent(ctx.db, { attendeeId: me.attendeeId }, "cancelled", "Premium", sub.id);
   return reply(204);
 }
 
@@ -251,8 +253,22 @@ export async function razorpayWebhook(ctx: Ctx) {
             amountMinor: pay.amount, currency: pay.currency, status: st, method: pay.method ?? null, capturedAt: st === "captured" ? new Date() : null })
             .onConflictDoUpdate({ target: payments.gatewayPaymentId, set: { status: st, method: pay.method ?? null, ...(st === "captured" ? { capturedAt: sql`coalesce(${payments.capturedAt}, now())` } : {}) } });
         }
-        if (subEntity.status === "pending" && sub.attendeeId && sub.status !== "pending")
-          await tx.insert(notifications).values({ attendeeId: sub.attendeeId, type: "billing", payload: { kind: "payment_failed", message: "Your Premium renewal payment failed. Razorpay will retry — please check your payment method." } });
+        // Billing notifications for the subscriber (attendee, or every member of the organization). Each is keyed to the
+        // subscription and period, so repeated/out-of-order webhooks never notify twice.
+        if (status !== sub.status || payload.event === "subscription.charged") {
+          const [plan] = await tx.select({ name: subscriptionPlans.name }).from(subscriptionPlans).where(eq(subscriptionPlans.id, sub.planId)).limit(1);
+          const planName = plan?.name.replace(" (yearly)", "") ?? "Your plan";
+          const period = periodStart ? periodStart.toISOString().slice(0, 10) : "first";
+          let what: BillingEvent | null = null;
+          const newPeriod = !!sub.currentPeriodStart && !!periodStart && periodStart.getTime() !== sub.currentPeriodStart.getTime();
+          if (status === "active") what = sub.status === "active" || sub.status === "pending" ? (newPeriod ? "renewed" : null) : "activated";
+          else if (status === "pending") what = "payment_failed";
+          else if (status === "halted") what = "halted";
+          else if (status === "cancelled") what = "cancelled";
+          else if (status === "completed" || status === "expired") what = "expired";
+          if (what) await billingEvent(tx, { attendeeId: sub.attendeeId, organizationId: sub.organizationId }, what, planName,
+            ["renewed", "payment_failed"].includes(what) ? `${sub.id}:${period}` : sub.id);
+        }
       }
     }
     // Single Event packages (Razorpay Orders): the webhook grants the credit even if the browser never came back.
@@ -263,6 +279,7 @@ export async function razorpayWebhook(ctx: Ctx) {
       const full = refunded >= pay.amount;
       const [p] = await tx.update(payments).set({ status: full ? "refunded" : "partially_refunded", refundedMinor: refunded }).where(eq(payments.gatewayPaymentId, pay.id)).returning();
       if (p?.subscriptionId && full) await revokeSource(tx, p.subscriptionId);
+      if (p && full) await billingEvent(tx, { attendeeId: p.attendeeId, organizationId: p.organizationId }, "refunded", p.purpose === "event_credit" ? "Single Event" : "Subscription", p.id);
       // A fully refunded Single Event credit is withdrawn if unused. A used one keeps its event: data is never deleted.
       if (p?.purpose === "event_credit" && full) {
         const revoked = await tx.update(organizationEventCredits).set({ revokedAt: new Date() })
@@ -426,6 +443,8 @@ export async function orgCancelSubscription(ctx: Ctx) {
   // Paid features continue until the end of the paid period; events and data are never removed.
   await ctx.db.update(subscriptions).set({ cancelAtPeriodEnd: true, updatedAt: new Date() }).where(eq(subscriptions.id, sub.id));
   await audit(ctx.db, { actorType: "organizer", actorId: organizer.userId, action: "billing.subscription_cancel_requested", targetType: "subscription", targetId: sub.id, organizationId: orgId });
+  const [plan] = await ctx.db.select({ name: subscriptionPlans.name }).from(subscriptionPlans).where(eq(subscriptionPlans.id, sub.planId)).limit(1);
+  await billingEvent(ctx.db, { organizationId: orgId }, "cancelled", plan?.name ?? "Your plan", sub.id);
   return reply(204);
 }
 
@@ -479,6 +498,7 @@ async function settleEventCreditPayment(tx: Executor, orderId: string, pay: RzpP
     await tx.update(payments).set({ status: "captured", gatewayPaymentId: pay.id, method: pay.method ?? null, capturedAt: new Date(), failureReason: null }).where(eq(payments.id, row.id));
   const granted = await tx.insert(organizationEventCredits).values({ organizationId: row.organizationId, source: "purchase", paymentId: row.id }).onConflictDoNothing().returning({ id: organizationEventCredits.id });
   if (!granted.length) return "already";
+  await billingEvent(tx, { organizationId: row.organizationId }, "credit_purchased", "Single Event", row.id);
   await audit(tx, { actorType: "gateway", action: "billing.event_credit_granted", targetType: "payment", targetId: row.id, organizationId: row.organizationId, data: { orderId, paymentId: pay.id } });
   return "granted";
 }

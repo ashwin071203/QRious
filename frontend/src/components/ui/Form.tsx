@@ -72,17 +72,20 @@ export function Toggle({
   label,
   description,
   disabled,
+  hideLabel,
 }: {
   checked: boolean;
   onChange: (value: boolean) => void;
   label: ReactNode;
   description?: ReactNode;
   disabled?: boolean;
+  /** Visually hidden label (still announced), for compact grids. */
+  hideLabel?: boolean;
 }) {
   const id = useId();
   return (
-    <div className="flex items-start justify-between gap-4">
-      <div className="min-w-0">
+    <div className={hideLabel ? "flex" : "flex items-start justify-between gap-4"}>
+      <div className={hideLabel ? "sr-only" : "min-w-0"}>
         <label htmlFor={id} className="block text-[15px] font-medium text-text">{label}</label>
         {description && <div className="mt-1 text-sm text-text-2">{description}</div>}
       </div>

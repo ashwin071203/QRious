@@ -1,4 +1,5 @@
 import "server-only";
+import * as rules from "@/server/notifications/rules";
 import { createHash } from "node:crypto";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { schema, type Executor } from "@/server/db";
@@ -396,6 +397,7 @@ export async function requestDeletion(ctx: Ctx) {
     await tx.insert(accountDeletionRequests).values({ attendeeId: me.attendeeId, requestedAt: now, scheduledFor: new Date(now.getTime() + DELETION_GRACE_MS) });
     await revokeAllSessions(tx, me.attendeeId, "deletion", me.sessionId);
     await audit(tx, { actorType: "attendee", actorId: me.attendeeId, action: "attendee.deletion_requested", targetType: "attendee", targetId: me.attendeeId });
+    await rules.account(tx, me.attendeeId, "deletion_scheduled", "Your account is scheduled for deletion", "You can cancel within 14 days from Settings.", "/app/settings");
   });
   return { scheduledFor: new Date(now.getTime() + DELETION_GRACE_MS) };
 }
@@ -407,6 +409,7 @@ export async function cancelDeletion(ctx: Ctx) {
       .where(and(eq(accountDeletionRequests.attendeeId, me.attendeeId), sql`completed_at IS NULL AND cancelled_at IS NULL`)).returning({ id: accountDeletionRequests.id });
     if (!r.length) throw notFound("There's no pending deletion.");
     await tx.update(attendees).set({ status: "active", deactivatedAt: null }).where(and(eq(attendees.id, me.attendeeId), eq(attendees.status, "deactivated")));
+    await rules.account(tx, me.attendeeId, "deletion_cancelled", "Account deletion cancelled", "Welcome back — your profile is active again.", "/app/profile");
   });
   return reply(204);
 }

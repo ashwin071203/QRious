@@ -44,6 +44,7 @@ async function main() {
     await c.query(`DELETE FROM subscription_invoices WHERE payment_id IN (SELECT id FROM payments WHERE attendee_id IN (SELECT id FROM e2e_attendees))`);
     await c.query(`DELETE FROM payments WHERE attendee_id IN (SELECT id FROM e2e_attendees)`);
     await c.query(`DELETE FROM subscriptions WHERE attendee_id IN (SELECT id FROM e2e_attendees)`);
+    await c.query(`DELETE FROM notification_settings WHERE (recipient_type = 'attendee' AND recipient_id IN (SELECT id FROM e2e_attendees)) OR (recipient_type = 'organizer' AND recipient_id IN (SELECT id FROM e2e_orgusers))`);
     await c.query(`DELETE FROM attendees WHERE id IN (SELECT id FROM e2e_attendees)`);
     // Test-mode billing rows of those organizations (credits → payments → subscriptions; FK order).
     await c.query(`DELETE FROM organization_event_credits WHERE organization_id IN (SELECT id FROM e2e_orgs)`);

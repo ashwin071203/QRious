@@ -11,6 +11,7 @@ import { requireAdmin } from "./organizers";
 import { revokeAllSessions } from "./identity";
 import { EVENT_PACKAGE_CODE, adminOrganizerBilling, grantPlan, revokeSource } from "./billing";
 import { config } from "@/server/core/config";
+import * as rules from "@/server/notifications/rules";
 
 const { attendees, userProfiles, organizations, organizerUsers, organizerSessions, events, userReports, moderationActions, interests, skills, eventCategories,
   subscriptionPlans, promotionalAccess, organizationEventCredits, auditLogs, accountDeletionRequests, socialLinks, profileInterests, profileSkills, profileLookingForSkills, savedProfiles } = schema;
@@ -75,6 +76,7 @@ export async function setOrganizationStatus(ctx: Ctx, suspend: boolean) {
   const r = await ctx.db.update(organizations).set({ status: suspend ? "suspended" : "active" }).where(eq(organizations.id, ctx.params.id!)).returning({ id: organizations.id });
   if (!r.length) throw notFound();
   await moderate(ctx.db, admin.userId, "organization", ctx.params.id!, suspend ? "suspend" : "restore", b.reason ?? null);
+  await rules.organizationStatus(ctx.db, ctx.params.id!, suspend);
   return reply(204);
 }
 
@@ -111,6 +113,7 @@ export async function setEventModeration(ctx: Ctx, suspend: boolean) {
   const r = await ctx.db.update(events).set({ moderationStatus: suspend ? "suspended" : "ok", updatedAt: new Date() }).where(eq(events.id, ctx.params.id!)).returning({ id: events.id });
   if (!r.length) throw notFound();
   await moderate(ctx.db, admin.userId, "event", ctx.params.id!, suspend ? "suspend_event" : "restore_event", b.reason ?? null);
+  await rules.eventModerated(ctx.db, ctx.params.id!, suspend);
   return reply(204);
 }
 
@@ -343,6 +346,7 @@ export async function grantPromotion(ctx: Ctx) {
   const id = await ctx.db.transaction(async (tx) => {
     const [promo] = await tx.insert(promotionalAccess).values({ subscriberType: plan.audience, attendeeId, organizationId, planId: plan.id, grantedBy: admin.userId, reason, startsAt: new Date(), endsAt }).returning({ id: promotionalAccess.id });
     await grantPlan(tx, { attendeeId, organizationId }, plan.id, "promo", promo!.id, endsAt);
+    await rules.billingEvent(tx, { attendeeId, organizationId }, "activated", `${plan.name.replace(" (yearly)", "")} (complimentary, ${days} days)`, promo!.id);
     await audit(tx, { actorType: "admin", actorId: admin.userId, action: "admin.promo_granted", targetType: "promotional_access", targetId: promo!.id, data: { plan: plan.code, days } });
     return promo!.id;
   });
@@ -407,8 +411,14 @@ export async function runMaintenance(db: Executor) {
   }
   // Subscriptions whose paid period (plus a day of grace) ended without a renewal are expired. A late renewal webhook
   // can still revive them; entitlements already stopped at valid_until. Nothing else is touched or deleted.
-  await db.execute(sql`UPDATE subscriptions SET status = 'expired', updated_at = now()
-    WHERE status IN ('active','pending') AND current_period_end IS NOT NULL AND current_period_end < now() - interval '1 day'`);
+  const lapsed = (await db.execute<{ id: string; attendee_id: string | null; organization_id: string | null; plan: string }>(sql`
+    UPDATE subscriptions s SET status = 'expired', updated_at = now() FROM subscription_plans p
+    WHERE p.id = s.plan_id AND s.status IN ('active','pending') AND s.current_period_end IS NOT NULL AND s.current_period_end < now() - interval '1 day'
+    RETURNING s.id, s.attendee_id, s.organization_id, p.name AS plan`)).rows;
+  const { billingEvent } = await import("@/server/notifications/rules");
+  for (const l of lapsed) await billingEvent(db, { attendeeId: l.attendee_id, organizationId: l.organization_id }, "expired", l.plan.replace(" (yearly)", ""), l.id);
+  const { sweep } = await import("@/server/notifications/api");
+  await sweep(db);
   await db.execute(sql`DELETE FROM idempotency_keys WHERE expires_at < now()`);
   await db.execute(sql`DELETE FROM rate_limit_counters WHERE window_start < now() - interval '2 days'`);
   await db.execute(sql`DELETE FROM attendee_sessions WHERE (revoked_at IS NOT NULL AND revoked_at < now() - interval '30 days') OR absolute_expires_at < now() - interval '30 days'`);
