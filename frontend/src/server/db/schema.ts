@@ -5,7 +5,7 @@
  */
 import { sql } from "drizzle-orm";
 import {
-  bigserial, boolean, check, customType, index, integer, jsonb, pgTable, primaryKey, smallint, text, timestamp, uniqueIndex, uuid,
+  bigint, bigserial, boolean, check, customType, index, integer, jsonb, pgTable, primaryKey, smallint, text, timestamp, uniqueIndex, uuid,
 } from "drizzle-orm/pg-core";
 
 const bytea = customType<{ data: Buffer }>({ dataType: () => "bytea" });
@@ -252,6 +252,12 @@ export const organizerUsers = pgTable("organizer_users", {
   failedLogins: integer("failed_logins").notNull().default(0),
   lockedUntil: ts("locked_until"),
   passwordChangedAt: ts("password_changed_at").notNull().defaultNow(),
+  // Admin TOTP MFA (D-24): AES-256-GCM-encrypted secret; last accepted time-step prevents code replay.
+  totpSecretEnc: text("totp_secret_enc"),
+  totpEnabledAt: ts("totp_enabled_at"),
+  totpLastStep: bigint("totp_last_step", { mode: "number" }),
+  totpFailedAttempts: integer("totp_failed_attempts").notNull().default(0),
+  totpLockedUntil: ts("totp_locked_until"),
   createdAt: createdAt(),
 }, (t) => [
   uniqueIndex("ux_organizer_users_email").on(t.emailNormalized),
@@ -266,6 +272,7 @@ export const organizerSessions = pgTable("organizer_sessions", {
   lastSeenAt: ts("last_seen_at").notNull(),
   expiresAt: ts("expires_at").notNull(),
   revokedAt: ts("revoked_at"),
+  mfaVerifiedAt: ts("mfa_verified_at"),
   userAgentSummary: text("user_agent_summary"),
 }, (t) => [uniqueIndex("ux_organizer_sessions_token").on(t.tokenHash), index("ix_organizer_sessions_user").on(t.userId)]);
 

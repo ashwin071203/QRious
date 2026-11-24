@@ -3,7 +3,8 @@
  * interests/skills, networking intentions, subscription plans). Idempotent. Creates NO demo organizations,
  * events or people. Run: `npm run db:migrate` (also runs automatically during Vercel builds).
  */
-import "dotenv/config";
+import { config as loadEnv } from "dotenv";
+loadEnv({ path: [".env.local", ".env"], quiet: true });
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { sql } from "drizzle-orm";
@@ -88,7 +89,9 @@ export async function run(url: string) {
 }
 
 if (process.argv[1]?.includes("migrate")) {
-  const url = process.env.DATABASE_URL ?? process.env.POSTGRES_URL;
+  const url = 
+    // DDL over a direct connection (Neon pooler runs in transaction mode)
+    process.env.DATABASE_URL_UNPOOLED ?? process.env.POSTGRES_URL_NON_POOLING ?? process.env.DATABASE_URL ?? process.env.POSTGRES_URL;
   if (!url) {
     console.log("DATABASE_URL not set — skipping migrations.");
     process.exit(0);

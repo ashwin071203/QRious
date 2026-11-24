@@ -11,6 +11,8 @@ import { audit } from "@/server/core/platform";
 import { removeMedia, saveSquareImage } from "@/server/core/media";
 import { cleanText, generateRecoveryCode, hashRecoveryCode, newToken, normalizeHttpsUrl, normalizeRecoveryCode, sha256, slugify, userAgentSummary, verifyRecoveryCode } from "@/server/lib/rules";
 import { orgHasFeature } from "./billing";
+import QRCode from "qrcode";
+import { decryptSecret, encryptSecret, newTotpSecret, otpauthUrl, verifyTotp } from "@/server/lib/totp";
 
 const { organizerUsers, organizerSessions, organizerRecoveryCodes, organizations, organizationMembers, events } = schema;
 const scrypt = promisify(scryptCb) as (pw: string, salt: Buffer, len: number, opts: object) => Promise<Buffer>;
@@ -41,7 +43,7 @@ const normEmail = (e: unknown) => (typeof e === "string" ? e.trim().toLowerCase(
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 // ---------- Sessions ----------
-export type OrganizerAuth = { userId: string; sessionId: string; isAdmin: boolean; displayName: string; email: string };
+export type OrganizerAuth = { userId: string; sessionId: string; isAdmin: boolean; displayName: string; email: string; mfaEnrolled: boolean; mfaVerified: boolean };
 
 async function createOrgSession(ctx: Ctx, db: Executor, userId: string, isAdmin: boolean) {
   const { token, hash } = newToken();
@@ -66,7 +68,9 @@ export async function maybeOrganizer(ctx: Ctx): Promise<OrganizerAuth | null> {
       await ctx.db.update(organizerSessions).set({ lastSeenAt: now, expiresAt }).where(eq(organizerSessions.id, row.s.id));
       ctx.setCookie(ORGANIZER_COOKIE, token, { expires: expiresAt });
     }
-    return { userId: row.u.id, sessionId: row.s.id, isAdmin: row.u.isAdmin, displayName: row.u.displayName, email: row.u.email };
+    const mfaEnrolled = !!row.u.totpEnabledAt && !!row.u.totpSecretEnc;
+    return { userId: row.u.id, sessionId: row.s.id, isAdmin: row.u.isAdmin, displayName: row.u.displayName, email: row.u.email,
+      mfaEnrolled, mfaVerified: mfaEnrolled && !!row.s.mfaVerifiedAt && row.s.mfaVerifiedAt >= row.u.totpEnabledAt! };
   });
 }
 
@@ -79,7 +83,72 @@ export async function requireOrganizer(ctx: Ctx) {
 export async function requireAdmin(ctx: Ctx) {
   const o = await requireOrganizer(ctx);
   if (!o.isAdmin) throw forbidden("Platform administrators only.");
+  if (!o.mfaEnrolled) throw new AppError(403, "mfa_enrollment_required", "Set up two-factor authentication to use the admin panel.");
+  if (!o.mfaVerified) throw new AppError(403, "mfa_required", "Enter the code from your authenticator app to continue.");
   return o;
+}
+
+// ---------- Admin MFA (D-24): TOTP, required for every admin session ----------
+async function requireAdminAccount(ctx: Ctx) {
+  const o = await requireOrganizer(ctx);
+  if (!o.isAdmin) throw forbidden("Platform administrators only.");
+  return o;
+}
+
+/** Starts (or restarts) enrollment: a fresh secret is stored encrypted but inactive until a code confirms it. */
+export async function mfaSetup(ctx: Ctx) {
+  const o = await requireAdminAccount(ctx);
+  if (o.mfaEnrolled) throw conflict("mfa_already_enabled", "Two-factor authentication is already set up.");
+  await ctx.limit("mfa-setup", 20, 3600, o.userId);
+  const secret = newTotpSecret();
+  await ctx.db.update(organizerUsers).set({ totpSecretEnc: encryptSecret(secret, config.recoveryPepper), totpEnabledAt: null, totpLastStep: null, totpFailedAttempts: 0, totpLockedUntil: null })
+    .where(eq(organizerUsers.id, o.userId));
+  const url = otpauthUrl(secret, o.email);
+  return { secret, otpauthUrl: url, qrDataUrl: await QRCode.toDataURL(url, { margin: 1, width: 240, errorCorrectionLevel: "M" }) };
+}
+
+async function checkTotp(ctx: Ctx, userId: string, code: unknown, mode: "enable" | "verify") {
+  await ctx.limit(`mfa-${mode}`, 30, 900, userId);
+  return ctx.db.transaction(async (tx) => {
+    const [u] = (await tx.execute<{ totp_secret_enc: string | null; totp_enabled_at: Date | null; totp_last_step: string | null; totp_failed_attempts: number; totp_locked_until: Date | null }>(
+      sql`SELECT totp_secret_enc, totp_enabled_at, totp_last_step, totp_failed_attempts, totp_locked_until FROM organizer_users WHERE id = ${userId} FOR UPDATE`)).rows;
+    if (!u?.totp_secret_enc) throw new AppError(409, "mfa_not_started", "Start two-factor setup first.");
+    if (mode === "enable" && u.totp_enabled_at) throw conflict("mfa_already_enabled", "Two-factor authentication is already set up.");
+    if (mode === "verify" && !u.totp_enabled_at) throw new AppError(403, "mfa_enrollment_required", "Set up two-factor authentication first.");
+    if (u.totp_locked_until && new Date(u.totp_locked_until) > new Date())
+      throw new AppError(429, "mfa_locked", "Too many incorrect codes. Try again in 15 minutes.");
+    const step = verifyTotp(decryptSecret(u.totp_secret_enc, config.recoveryPepper), code, Date.now(), u.totp_last_step === null ? null : Number(u.totp_last_step));
+    if (step === null) {
+      const n = u.totp_failed_attempts + 1;
+      await tx.update(organizerUsers).set(n >= 5 ? { totpFailedAttempts: 0, totpLockedUntil: new Date(Date.now() + 15 * 60_000) } : { totpFailedAttempts: n }).where(eq(organizerUsers.id, userId));
+      return false;
+    }
+    const now = new Date();
+    await tx.update(organizerUsers).set({ totpLastStep: step, totpFailedAttempts: 0, totpLockedUntil: null, ...(mode === "enable" ? { totpEnabledAt: now } : {}) }).where(eq(organizerUsers.id, userId));
+    return now;
+  });
+}
+
+export async function mfaEnable(ctx: Ctx) {
+  const o = await requireAdminAccount(ctx);
+  const { code } = await ctx.json<{ code?: string }>();
+  const at = await checkTotp(ctx, o.userId, code, "enable");
+  if (!at) throw new AppError(400, "validation_failed", "One or more fields are invalid.", { code: ["That code isn’t right. Check your authenticator app and try again."] });
+  await ctx.db.update(organizerSessions).set({ mfaVerifiedAt: at }).where(eq(organizerSessions.id, o.sessionId));
+  await audit(ctx.db, { actorType: "admin", actorId: o.userId, action: "admin.mfa_enabled", ip: ctx.ip });
+  return { ok: true };
+}
+
+export async function mfaVerify(ctx: Ctx) {
+  const o = await requireAdminAccount(ctx);
+  const { code } = await ctx.json<{ code?: string }>();
+  const at = await checkTotp(ctx, o.userId, code, "verify");
+  if (!at) {
+    await audit(ctx.db, { actorType: "admin", actorId: o.userId, action: "admin.mfa_failed", ip: ctx.ip });
+    throw new AppError(400, "validation_failed", "One or more fields are invalid.", { code: ["That code isn’t right. Check your authenticator app and try again."] });
+  }
+  await ctx.db.update(organizerSessions).set({ mfaVerifiedAt: at }).where(eq(organizerSessions.id, o.sessionId));
+  return { ok: true };
 }
 
 async function issueOrgRecovery(db: Executor, userId: string) {
@@ -167,7 +236,9 @@ export async function recoverOrganizer(ctx: Ctx) {
       return null;
     }
     await tx.update(organizerRecoveryCodes).set({ status: "used", usedAt: new Date() }).where(eq(organizerRecoveryCodes.id, rc.id));
-    await tx.update(organizerUsers).set({ passwordHash: await hashPassword(b.newPassword!), passwordChangedAt: new Date(), failedLogins: 0, lockedUntil: null }).where(eq(organizerUsers.id, u.id));
+    // The recovery code doubles as the admin MFA backup factor: recovering resets TOTP so a lost phone can be re-enrolled.
+    await tx.update(organizerUsers).set({ passwordHash: await hashPassword(b.newPassword!), passwordChangedAt: new Date(), failedLogins: 0, lockedUntil: null,
+      totpSecretEnc: null, totpEnabledAt: null, totpLastStep: null, totpFailedAttempts: 0, totpLockedUntil: null }).where(eq(organizerUsers.id, u.id));
     await tx.update(organizerSessions).set({ revokedAt: new Date() }).where(and(eq(organizerSessions.userId, u.id), sql`revoked_at IS NULL`));
     const newCode = await issueOrgRecovery(tx, u.id);
     await new Promise((r) => setTimeout(r, 5)); // session created after passwordChangedAt
@@ -222,7 +293,7 @@ export async function myOrganizations(db: Executor, userId: string) {
 export async function organizerMe(ctx: Ctx) {
   const o = await maybeOrganizer(ctx);
   if (!o) return { authenticated: false };
-  return { authenticated: true, user: { id: o.userId, displayName: o.displayName, email: o.email, isAdmin: o.isAdmin }, organizations: await myOrganizations(ctx.db, o.userId) };
+  return { authenticated: true, user: { id: o.userId, displayName: o.displayName, email: o.email, isAdmin: o.isAdmin, mfaEnrolled: o.mfaEnrolled, mfaVerified: o.mfaVerified }, organizations: await myOrganizations(ctx.db, o.userId) };
 }
 
 /** Membership check: every organizer action is scoped to orgs the caller belongs to (BR-21). */

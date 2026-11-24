@@ -54,6 +54,7 @@ async function attendeeJoins(browser: Browser, code: string, name: string, extra
   await expect(page.getByText("Available", { exact: true })).toBeVisible();
   await page.getByLabel("Search interests").fill("Indie");
   await page.getByRole("button", { name: /^Indie$/ }).first().click();
+  await expect(page.getByLabel("Selected interests").getByText("Indie")).toBeVisible();
   await extra(page);
   await page.getByLabel(/I understand and agree/).check();
   await page.getByRole("button", { name: "Create profile & join event" }).click();
@@ -71,12 +72,14 @@ test("Journeys A–E: organizer publishes, attendees join via QR, discover, conn
   const singer = await attendeeJoins(browser, code, "Asha Singer", async (p) => {
     await p.getByLabel("Search skills").first().fill("vocalist");
     await p.getByRole("button", { name: /^Singing$/ }).first().click();
+    await expect(p.getByLabel("Selected skills").first().getByText("Singing")).toBeVisible();
   });
   await expect(singer.page).not.toHaveURL(/discover/);
   await shot(singer.page, "event-home");
   const producer = await attendeeJoins(browser, code, "Rohan Producer", async (p) => {
     await p.getByLabel("Search skills").first().fill("Music production");
     await p.getByRole("button", { name: /^Music production$/ }).first().click();
+    await expect(p.getByLabel("Selected skills").first().getByText("Music production")).toBeVisible();
   });
 
   const eventBase = producer.page.url().replace(/\/home$/, "");

@@ -1,33 +1,28 @@
 name: CI
 
+# The deployed application is the full-stack Next.js app in frontend/ (D-29). backend/ is the archived
+# ASP.NET Core Phase 1 reference and is no longer built here.
+
 on:
   push:
     branches: [main]
   pull_request:
 
 jobs:
-  backend:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: backend
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 10.0.x
-      - run: dotnet restore
-      - run: dotnet build --no-restore -c Release
-      - name: Unit tests
-        run: dotnet test tests/QRious.UnitTests --no-build -c Release
-      - name: Integration tests (Testcontainers PostgreSQL)
-        run: dotnet test tests/QRious.IntegrationTests --no-build -c Release
-
-  frontend:
+  test:
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: frontend
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: qrious_test
+          POSTGRES_USER: qrious
+          POSTGRES_PASSWORD: qrious_dev_password
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U qrious" --health-interval 5s --health-retries 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -38,48 +33,41 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
-      - run: npm run build
+      - name: Unit + API integration tests (real PostgreSQL)
+        run: npm test
 
   e2e:
-    needs: [backend, frontend]
+    needs: test
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
     services:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_DB: qrious
+          POSTGRES_DB: qrious_web
           POSTGRES_USER: qrious
           POSTGRES_PASSWORD: qrious_dev_password
         ports: ["5432:5432"]
         options: --health-cmd "pg_isready -U qrious" --health-interval 5s --health-retries 20
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 10.0.x
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - name: Start API
-        working-directory: backend
-        env:
-          ASPNETCORE_ENVIRONMENT: Development
-          RateLimiting__Enabled: "false"
+      - run: npm ci
+      - name: Migrate, build and start
         run: |
-          nohup dotnet run --project src/QRious.Api --launch-profile http > api.log 2>&1 &
-          for i in $(seq 1 90); do curl -sf http://localhost:5080/health/live && break; sleep 2; done
-      - name: Build and start web
-        working-directory: frontend
-        run: |
-          npm ci
           cp .env.example .env.local
+          cp .env.example .env
+          npm run db:migrate
           npm run build
           nohup npm start > web.log 2>&1 &
           for i in $(seq 1 60); do curl -sf http://localhost:3000 >/dev/null && break; sleep 2; done
-      - name: Playwright
-        working-directory: frontend
+      - name: Playwright journeys (mobile + desktop)
         run: |
           npx playwright install --with-deps chromium
           npm run test:e2e
@@ -89,5 +77,4 @@ jobs:
           name: e2e-artifacts
           path: |
             frontend/test-results
-            backend/api.log
             frontend/web.log

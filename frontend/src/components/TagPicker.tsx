@@ -32,6 +32,7 @@ export function TagPicker({
 }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Tag[]>([]);
+  const [resultsFor, setResultsFor] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -42,7 +43,9 @@ export function TagPicker({
         const params = new URLSearchParams({ limit: query ? "12" : "18" });
         if (query.trim()) params.set("q", query.trim());
         if (eventId) params.set("eventId", eventId);
-        setResults(await api<Tag[]>(`/taxonomy/${kind}?${params}`, { signal: ctrl.signal }));
+        const found = await api<Tag[]>(`/taxonomy/${kind}?${params}`, { signal: ctrl.signal });
+        setResults(found);
+        setResultsFor(query.trim());
       } catch {
         /* keep previous results on transient errors */
       } finally {
@@ -65,8 +68,12 @@ export function TagPicker({
   };
 
   const trimmed = query.trim().replace(/\s+/g, " ");
-  const exactMatch = results.some((r) => norm(r.name) === norm(trimmed)) || value.some((v) => norm(v.name) === norm(trimmed));
-  const canAddCustom = trimmed.length >= 2 && trimmed.length <= 50 && !exactMatch && value.length < max;
+  // While a new search is in flight, narrow the previous list locally so chips don't jump under the user's finger,
+  // and don't offer "Add …" until the server has confirmed there's no existing match.
+  const stale = resultsFor !== query.trim();
+  const shown = stale && trimmed ? results.filter((r) => norm(r.name).includes(norm(trimmed))) : results;
+  const exactMatch = shown.some((r) => norm(r.name) === norm(trimmed)) || value.some((v) => norm(v.name) === norm(trimmed));
+  const canAddCustom = !stale && trimmed.length >= 2 && trimmed.length <= 50 && !exactMatch && value.length < max;
 
   const addCustom = () => {
     if (!canAddCustom) return;
@@ -107,9 +114,11 @@ export function TagPicker({
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               e.preventDefault();
-              const first = results.find((r) => !isSelected(r));
-              if (first && norm(first.name).startsWith(norm(trimmed)) && trimmed) toggle(first);
-              else addCustom();
+              if (!trimmed) return;
+              const first = shown.find((r) => !isSelected(r));
+              if (first && norm(first.name).startsWith(norm(trimmed))) toggle(first);
+              else if (canAddCustom) addCustom();
+              else return; // results still loading — keep what the user typed
               setQuery("");
             }
           }}
@@ -122,7 +131,7 @@ export function TagPicker({
       </div>
 
       <div className="flex min-h-10 flex-wrap gap-2" aria-busy={loading}>
-        {results
+        {shown
           .filter((r) => !isSelected(r))
           .slice(0, query ? 12 : 16)
           .map((r) => (
@@ -138,7 +147,7 @@ export function TagPicker({
             Add &ldquo;{trimmed}&rdquo;
           </Chip>
         )}
-        {!loading && query && results.length === 0 && !canAddCustom && (
+        {!loading && !stale && query && shown.length === 0 && !canAddCustom && (
           <span className="py-1.5 text-sm text-text-2">No matches.</span>
         )}
       </div>

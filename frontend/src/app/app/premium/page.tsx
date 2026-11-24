@@ -16,6 +16,22 @@ import type { Plan } from "@/lib/types";
 const FREE = ["Create your profile", "Join unlimited events", "Discover people", "Basic Smart Matching", "Event Pulse", "Open to Talk", "Connection requests", "Private messaging", "Privacy controls"];
 const PREMIUM = ["Everything in Free", "Detailed compatibility insights", "Advanced discovery filters (company, location)", "See who saved your profile", "Profile highlight badge", "Networking analytics"];
 
+type RazorpayInstance = { open: () => void; on: (event: string, cb: (r: { error?: { description?: string } }) => void) => void };
+declare global { interface Window { Razorpay?: new (options: Record<string, unknown>) => RazorpayInstance } }
+
+/** Loads Razorpay Checkout.js once, on demand (only when the user actually upgrades). */
+function loadRazorpay(): Promise<void> {
+  if (window.Razorpay) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector<HTMLScriptElement>("script[data-razorpay]");
+    const s = existing ?? Object.assign(document.createElement("script"), { src: "https://checkout.razorpay.com/v1/checkout.js", async: true });
+    s.dataset.razorpay = "1";
+    s.addEventListener("load", () => resolve(), { once: true });
+    s.addEventListener("error", () => reject(new Error("load")), { once: true });
+    if (!existing) document.body.appendChild(s);
+  });
+}
+
 type Billing = { planCode: string; planName: string; paymentsEnabled: boolean; subscription: { status: string; planName: string; currentPeriodEnd: string | null; cancelAtPeriodEnd: boolean } | null;
   promotion: { planName: string; endsAt: string } | null; payments: { id: string; amountMinor: number; currency: string; status: string; createdAt: string }[] };
 
@@ -34,11 +50,35 @@ export default function PremiumPage() {
     if (!premium) return;
     setBusy(true);
     try {
-      await api("/subscriptions/checkout", { method: "POST", body: { planCode: premium.code } });
-      toast("success", "Checkout started.");
+      const c = await api<{ gateway: string; keyId: string; subscriptionId: string }>("/subscriptions/checkout", { method: "POST", body: { planCode: premium.code } });
+      try { await loadRazorpay(); } catch { throw new Error("The payment window couldn't load. Check your connection and try again."); }
+      const rz = new window.Razorpay!({
+        key: c.keyId,
+        subscription_id: c.subscriptionId,
+        name: "QRious",
+        description: premium.name,
+        theme: { color: "#8b5cf6" },
+        // Access is granted only by the verified server webhook (BR-25); the client just waits for it.
+        handler: () => {
+          toast("success", "Payment received — activating Premium…");
+          let tries = 0;
+          const poll = async () => {
+            const b = await billing.refetch();
+            if (b.data?.planCode === "attendee_premium" || ++tries > 20) {
+              setBusy(false);
+              if (b.data?.planCode !== "attendee_premium") toast("success", "Your payment is processing. Premium will switch on shortly.");
+              return;
+            }
+            setTimeout(poll, 3000);
+          };
+          void poll();
+        },
+        modal: { ondismiss: () => setBusy(false) },
+      });
+      rz.on("payment.failed", (r) => toast("error", r.error?.description ?? "Payment failed. You haven't been charged."));
+      rz.open();
     } catch (e) {
-      toast("error", e instanceof ApiError ? e.message : "Couldn't start checkout.");
-    } finally {
+      toast("error", e instanceof ApiError ? e.message : e instanceof Error ? e.message : "Couldn't start checkout.");
       setBusy(false);
     }
   }

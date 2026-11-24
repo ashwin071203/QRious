@@ -93,7 +93,7 @@ export interface Plan { code: string; name: string; description: string | null; 
 // Organizer
 export interface OrganizerMe {
   authenticated: boolean;
-  user?: { id: string; displayName: string; email: string; isAdmin: boolean };
+  user?: { id: string; displayName: string; email: string; isAdmin: boolean; mfaEnrolled: boolean; mfaVerified: boolean };
   organizations?: { id: string; name: string; slug: string; logoUrl: string | null; status: string; role: string }[];
 }
 export interface OrgEventRow { id: string; name: string; categoryName: string; status: string; moderationStatus: string; startsAt: string; endsAt: string; timeZone: string; venueName: string; city: string | null; participantCount: number; bannerUrl: string | null }

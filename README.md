@@ -36,14 +36,24 @@ Create an organizer account at `/organizer/register`, create and publish an even
 
 ```bash
 cd frontend
-npm test                    # 65 API/unit tests against real PostgreSQL (needs the docker DB, database qrious_test)
+npm test                    # 71 API/unit tests against real PostgreSQL (needs the docker DB, database qrious_test)
 npm run typecheck && npm run lint
 npm run build && npm start  # then:
 npm run test:e2e            # Playwright full journeys, mobile + desktop
 ```
 
+Against a deployment: `E2E_BASE_URL=https://qrious-rho.vercel.app npm run test:e2e`. The journeys create their own
+organizer, event and attendees (all `…@example.com`); remove them afterwards with a one-off build:
+`npx vercel deploy --prod --build-env QRIOUS_PURGE_E2E=1` (see `scripts/purge-e2e.ts`; it only touches E2E accounts).
+The admin journey (`e2e/admin.spec.ts`) runs only with `E2E_ADMIN_TOKEN` set, because it consumes the one-time bootstrap.
+
 ## Deployment (Vercel)
 
 `npm run vercel-build` runs migrations then `next build`. Required environment variables: `DATABASE_URL` (Neon),
 `BLOB_READ_WRITE_TOKEN`, `QRIOUS_RECOVERY_PEPPER`, `QRIOUS_IP_SALT`, `CRON_SECRET`, `QRIOUS_ADMIN_BOOTSTRAP_TOKEN`.
-Optional: `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` (test mode, D-01).
+Optional: `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` (test mode, D-01). With keys set, also put each
+paid plan's Razorpay plan id in `subscription_plans.gateway_plan_id` and point a Razorpay webhook at `/api/v1/payments/webhook/razorpay`.
+Premium is granted only by the verified webhook.
+
+Live: https://qrious-rho.vercel.app (Neon PostgreSQL, Singapore). First admin: register an organizer, enter the token
+from `QRIOUS_ADMIN_BOOTSTRAP_TOKEN` under Organizer → Account, then open `/admin` and enroll an authenticator app (D-24).

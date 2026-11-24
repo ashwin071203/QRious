@@ -59,7 +59,7 @@ export default function AccountPage() {
             <h2 className="flex items-center gap-2 font-display font-semibold"><Shield className="size-4 text-accent" />Platform administrator setup</h2>
             <p className="text-sm text-text-2">Only for the QRious operator: enter the one-time bootstrap token to become the first platform administrator.</p>
             <div className="flex gap-2">
-              <Input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="Bootstrap token" className="max-w-sm" />
+              <Input type="password" aria-label="Bootstrap token" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value)} placeholder="Bootstrap token" className="max-w-sm" />
               <Button variant="secondary" loading={busy === "admin"} onClick={async () => {
                 setBusy("admin");
                 try { await api("/organizer/auth/bootstrap-admin", { method: "POST", body: { token } }); toast("success", "You're now a platform administrator."); await qc.invalidateQueries(); }

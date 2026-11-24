@@ -32,7 +32,7 @@ Status legend:
 | D-21 | Event date/time model | 🟦 Provisional |
 | D-22 | Max participants behaviour | 🟦 Provisional |
 | D-23 | Organizer view of participants | 🟦 Provisional (Phase 8) |
-| D-24 | Admin authentication (MFA) | 🟦 Provisional (Phase 8) |
+| D-24 | Admin authentication (MFA) | ✅ Implemented (TOTP, required per admin session) |
 | D-25 | Messages navigation | 🟦 Provisional (Phase 7) |
 | D-26 | Full schema in Phase 1 | 🟦 Provisional (in effect via Phase 1 authorization) |
 | D-27 | Early staging deployment | ✅ Implied by hosting decision |
@@ -149,7 +149,7 @@ The product owner asked for a fully functional live deployment on free hosting w
 No email provider is configured (D-11 was provisional), so organizers get a one-time recovery code at registration (same design as attendees, D-13) and reset passwords with email + code. Email verification/reset can be added once an email provider is approved.
 
 ### D-31 — Platform admin bootstrap
-The first platform administrator is created with a one-time `QRIOUS_ADMIN_BOOTSTRAP_TOKEN` (Organizer → Account), and only while no admin exists. Admin TOTP MFA (D-24) remains to be built; admin sessions are short (12 h).
+The first platform administrator is created with a one-time `QRIOUS_ADMIN_BOOTSTRAP_TOKEN` (Organizer → Account), and only while no admin exists. Admin sessions are short (12 h) and require TOTP MFA (D-24): the admin enrolls an authenticator app on first visit to /admin, then confirms a 6-digit code at the start of every admin session. Secrets are AES-256-GCM-encrypted at rest; codes are single-use (replay-protected); 5 wrong codes lock MFA for 15 minutes. Recovering the organizer account with its recovery code resets MFA so a lost phone can be re-enrolled.
 
 ### D-32 — No demo data
 Production contains no seeded organizations, events or people. Only the reference taxonomy the PRD requires (event categories, predefined interests/skills, networking intentions, plans) is loaded.

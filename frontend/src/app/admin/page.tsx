@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { Search, ShieldAlert } from "lucide-react";
 import { useOrg } from "@/components/OrganizerShell";
+import { AdminMfaGate } from "@/components/AdminMfaGate";
 import { Button } from "@/components/ui/Button";
 import { Field, Input, Select } from "@/components/ui/Form";
 import { EmptyState, Skeleton } from "@/components/ui/Misc";
@@ -260,6 +261,7 @@ function AdminConsole() {
   const [tab, setTabState] = useState<Tab>((params.get("tab") as Tab) ?? "overview");
   const setTab = (t: Tab) => { setTabState(t); router.replace(`/admin?tab=${t}`, { scroll: false }); };
   if (!me.user?.isAdmin) return <div className="card"><EmptyState icon={<ShieldAlert className="size-7" />} title="Administrators only">Your account doesn&apos;t have platform admin access.</EmptyState></div>;
+  if (!me.user.mfaVerified) return <AdminMfaGate enrolled={me.user.mfaEnrolled} />;
   return (
     <>
       <PageHeader title="Platform admin" subtitle="Moderation, taxonomy, system health and revenue. Private messages are never visible here unless attached to a report." />

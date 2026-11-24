@@ -4,6 +4,7 @@ import { getDb } from "@/server/db";
 import { Client, createAttendee, resetDb, setupEvent, uniq } from "@/server/test/harness";
 import { verifyWebhookSignature } from "@/server/modules/billing";
 import { createHmac } from "node:crypto";
+import { totp } from "@/server/lib/totp";
 
 const db = () => getDb();
 const count = async (q: ReturnType<typeof sql>) => Number(((await db().execute<{ n: number }>(q)).rows[0] as { n: number }).n);
@@ -379,10 +380,33 @@ describe("Organizers, lifecycle, participants, admin (M13–M17, §7)", () => {
     process.env.QRIOUS_ADMIN_BOOTSTRAP_TOKEN = "bootstrap-token-for-tests-0123456789";
     const { qr, eventId } = await setupEvent();
     const adminClient = new Client();
-    await adminClient.post("/organizer/auth/register", { email: `${uniq("admin")}@example.com`, password: "a very long admin password", displayName: "Admin" });
+    const adminEmail = `${uniq("admin")}@example.com`;
+    await adminClient.post("/organizer/auth/register", { email: adminEmail, password: "a very long admin password", displayName: "Admin" });
     expect((await adminClient.post("/organizer/auth/bootstrap-admin", { token: "wrong" })).status).toBe(403);
     expect((await adminClient.post("/organizer/auth/bootstrap-admin", { token: process.env.QRIOUS_ADMIN_BOOTSTRAP_TOKEN })).status).toBe(200);
     expect((await adminClient.post("/organizer/auth/bootstrap-admin", { token: process.env.QRIOUS_ADMIN_BOOTSTRAP_TOKEN })).body.code).toBe("admin_exists");
+
+    // D-24: admin endpoints require TOTP enrollment, then a verified code per session
+    expect((await adminClient.get("/admin/reports")).body.code).toBe("mfa_enrollment_required");
+    expect((await adminClient.post("/organizer/auth/mfa/verify", { code: "123456" })).status).toBe(409);
+    const setup = await adminClient.post("/organizer/auth/mfa/setup");
+    expect(setup.body.secret).toMatch(/^[A-Z2-7]{32}$/);
+    expect(setup.body.qrDataUrl).toMatch(/^data:image\/png;base64,/);
+    expect((await adminClient.post("/organizer/auth/mfa/enable", { code: "000000" })).status).toBe(400);
+    const now = Date.now();
+    expect((await adminClient.post("/organizer/auth/mfa/enable", { code: totp(setup.body.secret, now) })).status).toBe(200);
+    expect((await adminClient.post("/organizer/auth/mfa/setup")).body.code).toBe("mfa_already_enabled");
+    expect((await adminClient.get("/admin/reports")).status).toBe(200);
+    expect((await adminClient.get("/organizer/me")).body.user).toMatchObject({ isAdmin: true, mfaEnrolled: true, mfaVerified: true });
+    // A new admin session must verify again; the code already used is rejected (replay)
+    const second = new Client();
+    expect((await second.post("/organizer/auth/login", { email: adminEmail, password: "a very long admin password" })).status).toBe(200);
+    expect((await second.get("/admin/reports")).body.code).toBe("mfa_required");
+    expect((await second.post("/organizer/auth/mfa/verify", { code: totp(setup.body.secret, now) })).status).toBe(400);
+    expect((await second.post("/organizer/auth/mfa/verify", { code: totp(setup.body.secret, now + 30_000) })).status).toBe(200);
+    expect((await second.get("/admin/reports")).status).toBe(200);
+    const [{ totp_secret_enc }] = (await db().execute<{ totp_secret_enc: string }>(sql`SELECT totp_secret_enc FROM organizer_users WHERE email_normalized = ${adminEmail.toLowerCase()}`)).rows;
+    expect(totp_secret_enc).not.toContain(setup.body.secret); // encrypted at rest
 
     const a = await createAttendee(qr);
     const b = await createAttendee(qr);
