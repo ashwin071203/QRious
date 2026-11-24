@@ -158,7 +158,7 @@ function EditTab({ e, onChange }: { e: OrgEventDetail; onChange: (d: OrgEventDet
   );
 }
 
-function QrTab({ e, onChange }: { e: OrgEventDetail; onChange: (d: OrgEventDetail) => void }) {
+export function QrTab({ e, onChange }: { e: OrgEventDetail; onChange: (d: OrgEventDetail) => void }) {
   const { busy, run } = useAction();
   const toast = useToast();
   const [confirm, setConfirm] = useState<"regenerate" | "revoke" | null>(null);
@@ -201,7 +201,7 @@ function QrTab({ e, onChange }: { e: OrgEventDetail; onChange: (d: OrgEventDetai
 
 type ParticipantRow = { id: string; status: string; discoveryPaused: boolean; joinedAt: string; removalReason: string | null; displayName: string; username: string; profession: string | null; thumbnailUrl: string | null; availability: string | null };
 
-function ParticipantsTab({ eventId }: { eventId: string }) {
+export function ParticipantsTab({ eventId }: { eventId: string }) {
   const { busy, run } = useAction();
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("active");
@@ -265,7 +265,7 @@ const TOGGLES: [string, string, string][] = [
   ["availabilityEnabled", "Open to Talk", "Attendees can set their availability."], ["premiumHighlightingEnabled", "Premium highlighting", "Allow Premium profile badges in Discover."],
 ];
 
-function NetworkingTab({ e, onChange }: { e: OrgEventDetail; onChange: (d: OrgEventDetail) => void }) {
+export function NetworkingTab({ e, onChange }: { e: OrgEventDetail; onChange: (d: OrgEventDetail) => void }) {
   const { busy, run } = useAction();
   const [interests, setInterests] = useState<PickedTag[]>(e.suggestions.interests);
   const [skills, setSkills] = useState<PickedTag[]>(e.suggestions.skills);

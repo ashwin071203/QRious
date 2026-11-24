@@ -9,8 +9,8 @@ const uid = () => `${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}
 const shot = async (page: Page, name: string) => { if (shots) await page.screenshot({ path: `${shots}/${name}.png`, fullPage: true }); };
 const utcInput = (d: Date) => d.toISOString().slice(0, 16);
 
-async function organizerCreatesEvent(browser: Browser) {
-  const ctx = await browser.newContext();
+async function organizerCreatesEvent(browser: Browser, opts: Parameters<Browser["newContext"]>[0] = {}) {
+  const ctx = await browser.newContext(opts);
   const page = await ctx.newPage();
   await page.goto("/organizer/register");
   await page.getByLabel("Your name").fill("Event Host");
@@ -155,4 +155,48 @@ test("Marketing home renders and protected areas redirect", async ({ page }) => 
   await expect(page).toHaveURL(/signin=required/);
   await page.goto("/organizer/dashboard");
   await expect(page).toHaveURL(/\/organizer\/login/);
+});
+
+test("Organizer QR Management, Participants and Networking are real pages; mobile uses a bottom tab bar", async ({ browser }, info) => {
+  test.setTimeout(120_000);
+  const mobile = info.project.name === "mobile";
+  const { ctx, page, code } = await organizerCreatesEvent(browser, mobile ? { viewport: { width: 412, height: 915 }, isMobile: true, hasTouch: true } : { viewport: { width: 1280, height: 860 } });
+
+  await page.goto("/organizer/qr");
+  await expect(page.getByRole("heading", { name: "QR Management", level: 1 })).toBeVisible();
+  await expect(page.getByAltText(/QR code for Jam Session E2E/)).toBeVisible();
+  await expect(page.getByText(`/e/${code}`)).toBeVisible();
+  await expect(page).toHaveURL(/\/organizer\/qr\?event=[0-9a-f-]+$/);
+
+  await page.goto("/organizer/participants");
+  await expect(page.getByRole("heading", { name: "Participants", level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Jam Session E2E" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Events", level: 1 })).toHaveCount(0);
+
+  await page.goto("/organizer/networking");
+  await expect(page.getByRole("heading", { name: "Networking", level: 1 })).toBeVisible();
+  await expect(page.getByRole("switch").first()).toBeVisible();
+  await shot(page, `organizer-networking-${info.project.name}`);
+
+  const nav = page.getByRole("navigation", { name: "Organizer" }).filter({ visible: true });
+  if (mobile) {
+    // Bottom tab bar, not top icons
+    const box = (await nav.boundingBox())!;
+    expect(box.y).toBeGreaterThan((page.viewportSize()!.height) / 2);
+    await nav.getByRole("link", { name: "QR" }).click();
+    await expect(page).toHaveURL(/\/organizer\/qr/);
+    await expect(nav.getByRole("link", { name: "QR" })).toHaveAttribute("aria-current", "page");
+    await nav.getByRole("button", { name: "More" }).click();
+    const sheet = page.getByRole("dialog", { name: "More" });
+    await expect(sheet).toBeVisible();
+    await shot(page, "organizer-more-sheet");
+    await sheet.getByRole("link", { name: "Networking" }).click();
+    await expect(page).toHaveURL(/\/organizer\/networking/);
+    await expect(sheet).toBeHidden();
+  } else {
+    await nav.getByRole("link", { name: "Participants" }).click();
+    await expect(page).toHaveURL(/\/organizer\/participants/);
+    await expect(nav.getByRole("link", { name: "Participants" })).toHaveAttribute("aria-current", "page");
+  }
+  await ctx.close();
 });
