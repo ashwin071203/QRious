@@ -4,6 +4,7 @@ import Link from "next/link";
 import { ArrowRight, Handshake, KeyRound, MessageCircle, ScanLine, ShieldCheck, Sparkles, UserPlus, Users, Zap } from "lucide-react";
 import { Logo } from "@/components/ui/Misc";
 import { SignInNotice } from "./SignInNotice";
+import { LazyHeroScene } from "@/components/three/LazyHeroScene";
 
 const categories = [
   ["concert", "Concerts"], ["music-festival", "Music festivals"], ["wedding", "Weddings"], ["college-festival", "College fests"],
@@ -21,13 +22,15 @@ export default function Home() {
         <Logo />
         <nav className="flex items-center gap-1 text-sm">
           <Link href="/recover" className="rounded-xl px-3 py-2 text-text-2 hover:text-text">Recover profile</Link>
+          <Link href="/organizer/login" className="hidden rounded-xl px-3 py-2 text-text-2 hover:text-text sm:inline">For organizers</Link>
           <Link href="/app" className="rounded-xl border border-line-strong px-3 py-2 font-medium hover:border-accent/50">Open app</Link>
         </nav>
       </header>
 
       <Suspense><SignInNotice /></Suspense>
 
-      <section className="relative mx-auto grid max-w-6xl items-center gap-10 px-5 pt-8 pb-16 lg:grid-cols-[1.1fr_1fr] lg:pt-16">
+      <section className="relative isolate mx-auto grid max-w-6xl items-center gap-10 px-5 pt-8 pb-16 lg:grid-cols-[1.1fr_1fr] lg:pt-16">
+        <div className="pointer-events-none absolute inset-0 -z-10 opacity-70"><LazyHeroScene /></div>
         <div>
           <span className="glass inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium text-accent-light">
             <Sparkles className="size-3.5" /> No app install · No passwords
@@ -121,14 +124,15 @@ export default function Home() {
           <div className="relative max-w-xl p-8 sm:p-12">
             <Users className="size-8 text-accent" />
             <h2 className="mt-4 font-display text-3xl font-bold">Hosting an event?</h2>
-            <p className="mt-3 text-text-2">Create your event, print one QR code, and let your attendees find each other. Organizer tools are arriving soon.</p>
+            <p className="mt-3 text-text-2">Create your event, print one QR code, and let your attendees find each other. Free to start.</p>
+            <div className="mt-6 flex flex-wrap gap-3"><Link href="/organizer/register" className="inline-flex h-12 items-center gap-2 rounded-2xl bg-grad-primary px-5 font-semibold">Create an event <ArrowRight className="size-4" /></Link><Link href="/organizer/login" className="inline-flex h-12 items-center rounded-2xl border border-line-strong px-5 font-semibold">Organizer sign in</Link></div>
           </div>
         </div>
       </section>
 
       <footer className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 border-t border-line px-5 py-8 text-sm text-text-2 sm:flex-row">
         <Logo className="text-base" />
-        <p>© {2026} QRious · Photos from Unsplash</p>
+        <p className="flex flex-wrap justify-center gap-4"><Link href="/privacy" className="hover:text-text">Privacy</Link><Link href="/terms" className="hover:text-text">Terms</Link><span>© 2026 QRious · Photos from Unsplash</span></p>
       </footer>
     </main>
   );

@@ -134,6 +134,29 @@ Three.js / React Three Fiber **only** on the marketing homepage and organizer lo
 - **D-03:** two fixed organization roles, Owner and Member.
 - **D-04:** premium highlighting only in identified Discover with an organizer toggle; "who saved you" shows only savers who opt in (default off), otherwise a count.
 
+## Implementation decisions taken under the product owner's blanket approval (2026-11-24)
+The product owner asked for a fully functional live deployment on free hosting with "all approval granted". These choices follow from that:
+
+### D-29 — Full-stack TypeScript on Vercel (supersedes the ASP.NET Core backend for deployment)
+- **Why:** the only hosting account available was the owner's Vercel account. Vercel cannot run .NET, and free .NET hosts (Render Free) sleep for 30–60 s, which is unacceptable for a QR scan at a venue. The backend was therefore ported to **Next.js Route Handlers (TypeScript)**, using the same database design, API contract, business rules and security model. The Phase 1 ASP.NET Core implementation is preserved in git history (commit `cb4e116`) and in `backend/` for reference.
+- **Database:** PostgreSQL (Neon via the Vercel Marketplace), Drizzle ORM migrations applied on every deploy.
+- **Storage:** Vercel Blob (public, random unguessable keys); images re-encoded with `sharp` to WebP, metadata stripped.
+- **Real-time (replaces SignalR, M10/M07):** serverless functions can't hold WebSockets, so updates use **short polling**: 3 s in an open chat (messages, typing, read receipts), 8–20 s for conversation lists, badges and notifications, 10 s for Event Pulse. Delivery is near-real-time (≤ 3 s in chat). A managed pub/sub (for example Ably or Pusher) can replace polling later without API changes.
+- **Rate limiting:** Postgres fixed-window counters (work across instances). Per-IP limits are deliberately generous because a whole venue often shares one Wi-Fi IP.
+- **Event lifecycle (D-06):** transitions are applied lazily on every event read (no always-on worker), plus a daily Vercel Cron for maintenance (deletions, cleanup).
+
+### D-30 — Organizer password recovery uses a recovery code
+No email provider is configured (D-11 was provisional), so organizers get a one-time recovery code at registration (same design as attendees, D-13) and reset passwords with email + code. Email verification/reset can be added once an email provider is approved.
+
+### D-31 — Platform admin bootstrap
+The first platform administrator is created with a one-time `QRIOUS_ADMIN_BOOTSTRAP_TOKEN` (Organizer → Account), and only while no admin exists. Admin TOTP MFA (D-24) remains to be built; admin sessions are short (12 h).
+
+### D-32 — No demo data
+Production contains no seeded organizations, events or people. Only the reference taxonomy the PRD requires (event categories, predefined interests/skills, networking intentions, plans) is loaded.
+
+### D-33 — Premium "advanced filters"
+Module 5 filters (interests, skills, profession, intentions, availability) stay free. The Premium "advanced discovery filters" are the additional **company** and **location** filters. Numeric limits remain unset (D-20).
+
 ## Product change log (PRD amendments made from these decisions)
 | Decision | PRD section changed |
 |---|---|

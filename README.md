@@ -1,51 +1,49 @@
 # QRious
 
 **One event. Many connections.** A QR-based event networking platform: attendees scan the event QR code,
-browse public profiles or create a reusable profile, and connect with people at the same event.
+browse public profiles or create a reusable profile, and connect and chat with people at the same event.
+Organizers create events, share one QR code, configure networking and manage participants.
 
-- Product spec: [docs/PRD.md](docs/PRD.md) · Planning pack: [docs/00-README.md](docs/00-README.md)
-- Stack: Next.js 16 (React 19, Tailwind v4, Motion) · ASP.NET Core 10 · EF Core 10 · PostgreSQL 16
+- Product spec: [docs/PRD.md](docs/PRD.md) · Planning pack & decisions: [docs/00-README.md](docs/00-README.md)
+- Stack (D-29): Next.js 16 full-stack (React 19, Tailwind v4, Motion, React Three Fiber) · TypeScript API route handlers ·
+  PostgreSQL (Neon) + Drizzle ORM · Vercel Blob · sharp · Vercel hosting
 
 ## Repository
 
 ```
-backend/    ASP.NET Core 10 modular monolith (Api, Application, Domain, Infrastructure) + xUnit tests
-frontend/   Next.js app: QR landing, onboarding, attendee app, same-origin API proxy, Playwright E2E
+frontend/   The application: UI (src/app), API (src/server + src/app/api/v1), migrations (drizzle/), tests
+backend/    Phase 1 ASP.NET Core implementation (reference; superseded for deployment by D-29)
 infra/      docker-compose for local PostgreSQL
 docs/       PRD, decisions, architecture, schema, API, security, deployment, roadmap
-render.yaml Render blueprint for the API (free tier staging)
 ```
 
 ## Run locally
 
-Prerequisites: .NET 10 SDK (or newer SDK), Node 24, Docker.
+Prerequisites: Node 24, Docker.
 
 ```bash
-docker compose -f infra/docker-compose.yml up -d          # PostgreSQL 16
-
-cd backend
-dotnet run --project src/QRious.Api --launch-profile http  # http://localhost:5080 — migrates + seeds demo event
-# Swagger UI: http://localhost:5080/swagger
-
-cd ../frontend
-cp .env.example .env.local
+docker compose -f infra/docker-compose.yml up -d     # PostgreSQL 16
+cd frontend
+cp .env.example .env.local                           # local defaults
 npm install
-npm run dev                                               # http://localhost:3000
+npm run db:migrate                                   # schema + reference taxonomy (no demo data)
+npm run dev                                          # http://localhost:3000
 ```
 
-Open **http://localhost:3000/e/DEMO2026QRUS**, the seeded demo event's QR landing page.
+Create an organizer account at `/organizer/register`, create and publish an event, then open the QR link it shows.
 
 ## Tests
 
 ```bash
-cd backend && dotnet test                 # unit + integration (Testcontainers PostgreSQL; Docker required)
-cd frontend && npm run typecheck && npm run lint
-cd frontend && npm run build && npm start # then, with the API running (RateLimiting__Enabled=false):
-cd frontend && npm run test:e2e           # Playwright, mobile + desktop
+cd frontend
+npm test                    # 65 API/unit tests against real PostgreSQL (needs the docker DB, database qrious_test)
+npm run typecheck && npm run lint
+npm run build && npm start  # then:
+npm run test:e2e            # Playwright full journeys, mobile + desktop
 ```
 
-## Security notes
+## Deployment (Vercel)
 
-- Attendee sessions: opaque 256-bit tokens, SHA-256 hash stored, HttpOnly first-party cookie via the same-origin proxy,
-  30-day idle / 180-day absolute, 24 h rotation. Recovery codes: shown once, peppered HMAC stored.
-- Never commit secrets. Configure them as environment variables (see `frontend/.env.example`, `render.yaml`).
+`npm run vercel-build` runs migrations then `next build`. Required environment variables: `DATABASE_URL` (Neon),
+`BLOB_READ_WRITE_TOKEN`, `QRIOUS_RECOVERY_PEPPER`, `QRIOUS_IP_SALT`, `CRON_SECRET`, `QRIOUS_ADMIN_BOOTSTRAP_TOKEN`.
+Optional: `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` (test mode, D-01).

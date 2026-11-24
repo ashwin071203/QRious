@@ -35,6 +35,7 @@ export function EventLanding({ code, event }: { code: string; event: PublicEvent
             <p className="mt-3 text-sm text-text-2">
               Hosted by <span className="font-medium text-text">{event.organizer.name}</span>
             </p>
+            {event.headline && <p className="glass mt-4 inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm"><Users className="size-4 text-accent" />{event.headline}</p>}
           </div>
         </div>
       </section>

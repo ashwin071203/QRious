@@ -61,3 +61,30 @@ export const availabilityLabel: Record<string, string> = {
 export function cn(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(" ");
 }
+
+// ---------- Event-local time <-> UTC (BR-23) ----------
+function tzOffsetMs(utcMs: number, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" })
+    .formatToParts(new Date(utcMs));
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value);
+  const asUtc = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
+  return asUtc - utcMs;
+}
+
+/** "2026-12-24T19:30" interpreted in `timeZone` → ISO UTC string. */
+export function zonedInputToIso(local: string, timeZone: string): string | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(local);
+  if (!m) return null;
+  const guess = Date.UTC(+m[1]!, +m[2]! - 1, +m[3]!, +m[4]!, +m[5]!);
+  let utc = guess - tzOffsetMs(guess, timeZone);
+  utc = guess - tzOffsetMs(utc, timeZone);
+  return new Date(utc).toISOString();
+}
+
+/** ISO UTC → "YYYY-MM-DDTHH:mm" in `timeZone` for <input type="datetime-local">. */
+export function isoToZonedInput(iso: string, timeZone: string): string {
+  const d = new Date(new Date(iso).getTime() + tzOffsetMs(new Date(iso).getTime(), timeZone));
+  return d.toISOString().slice(0, 16);
+}
+
+export const TIME_ZONES = ["Asia/Kolkata", "Asia/Dubai", "Asia/Singapore", "Asia/Tokyo", "Europe/London", "Europe/Berlin", "America/New_York", "America/Los_Angeles", "Australia/Sydney", "UTC"];

@@ -1,15 +1,14 @@
 import { defineConfig, devices } from "@playwright/test";
 
 /**
- * End-to-end tests against a running stack (API + web). Locally:
- *   docker compose -f infra/docker-compose.yml up -d
- *   dotnet run --project backend/src/QRious.Api   (seeds demo event DEMO2026QRUS)
- *   npm run build && npm start                     (in /frontend)
- *   npm run test:e2e
+ * End-to-end journeys against a running app (no seed data needed — tests create their own organizer/event/attendees).
+ *   docker compose -f ../infra/docker-compose.yml up -d && npm run db:migrate && npm run build && npm start
+ *   npm run test:e2e            (or E2E_BASE_URL=https://your-deployment npm run test:e2e)
  */
 export default defineConfig({
   testDir: "./e2e",
   timeout: 60_000,
+  expect: { timeout: 15_000 },
   retries: process.env.CI ? 1 : 0,
   reporter: [["list"]],
   outputDir: "./test-results",

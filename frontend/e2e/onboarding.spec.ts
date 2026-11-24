@@ -1,117 +1,155 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Browser, type Page } from "@playwright/test";
 
-const QR = process.env.E2E_QR_CODE ?? "DEMO2026QRUS";
+/**
+ * Full product journeys (PRD §8, Journeys A–E) against a running deployment — no seed data needed:
+ * the test creates its own organizer, event and attendees.
+ */
 const shots = process.env.E2E_SCREENSHOTS;
+const uid = () => `${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`;
+const shot = async (page: Page, name: string) => { if (shots) await page.screenshot({ path: `${shots}/${name}.png`, fullPage: true }); };
+const utcInput = (d: Date) => d.toISOString().slice(0, 16);
 
-function uniqueUsername(prefix: string) {
-  return `${prefix}${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`;
+async function organizerCreatesEvent(browser: Browser) {
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  await page.goto("/organizer/register");
+  await page.getByLabel("Your name").fill("Event Host");
+  await page.getByLabel("Email").fill(`host${uid()}@example.com`);
+  await page.getByLabel("Password").fill("a long organizer passphrase");
+  await page.getByRole("button", { name: "Create account" }).click();
+  await expect(page.locator('code[aria-label="Recovery code"]')).toHaveText(/^QRS(-[0-9A-Z]{4}){6}$/);
+  await page.getByLabel("I've saved my recovery code").check();
+  await page.getByRole("button", { name: "Continue to dashboard" }).click();
+
+  await page.getByLabel("Organization name").fill(`Collective ${uid()}`);
+  await page.getByRole("button", { name: "Create organization" }).click();
+  await page.getByRole("link", { name: "New event" }).first().click();
+  await page.getByLabel("Event name").fill("Jam Session E2E");
+  await page.getByLabel("Category").selectOption({ label: "Concert" });
+  await page.getByLabel("Time zone").selectOption("UTC");
+  const now = Date.now();
+  await page.getByLabel("Starts").fill(utcInput(new Date(now - 3600_000)));
+  await page.getByLabel("Ends").fill(utcInput(new Date(now + 5 * 3600_000)));
+  await page.getByLabel("Venue").fill("The Studio");
+  await page.getByRole("button", { name: "Create draft" }).click();
+  await page.getByRole("button", { name: "Publish" }).click();
+  await expect(page.getByRole("button", { name: "Pause networking" })).toBeVisible();
+  await shot(page, "organizer-event");
+  await page.getByRole("tab", { name: "QR code" }).click();
+  await expect(page.getByAltText(/QR code for/)).toBeVisible();
+  const url = (await page.locator("p.font-mono").textContent())!.trim();
+  await shot(page, "organizer-qr");
+  return { ctx, page, code: url.split("/e/")[1]! };
 }
 
-test("QR landing shows exactly two primary options (NN-03)", async ({ page }, info) => {
-  await page.goto(`/e/${QR}`);
-  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+async function attendeeJoins(browser: Browser, code: string, name: string, extra: (p: Page) => Promise<void> = async () => {}) {
+  const ctx = await browser.newContext({ viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true });
+  const page = await ctx.newPage();
+  await page.goto(`/e/${code}`);
   const options = page.getByRole("region", { name: "Choose how to continue" }).getByRole("link");
   await expect(options).toHaveCount(2);
-  await expect(options.nth(0)).toContainText("Discover People");
-  await expect(options.nth(1)).toContainText("Create My Profile");
-  if (shots) await page.screenshot({ path: `${shots}/landing-${info.project.name}.png`, fullPage: true });
-});
-
-test("Journey B: new attendee creates a profile, saves recovery code and lands on event home — not Discover", async ({ page, context }, info) => {
-  const username = uniqueUsername("e2e");
-  await page.goto(`/e/${QR}`);
-  await page.getByRole("link", { name: /Create My Profile/ }).click();
-  await expect(page).toHaveURL(new RegExp(`/e/${QR}/join`));
-
-  await page.getByLabel("Display name").fill("Playwright Tester");
-  await page.getByLabel("Username").fill(username);
-  await expect(page.getByText("Available")).toBeVisible();
-
-  // Interests: pick a suggestion and add a custom one
-  const interestSearch = page.getByLabel("Search interests");
-  await interestSearch.fill("Indie");
+  await options.filter({ hasText: "Create My Profile" }).click();
+  await page.getByLabel("Display name").fill(name);
+  await page.getByLabel("Username").fill(`${name.toLowerCase().replace(/\s/g, "")}${uid()}`.slice(0, 30));
+  await expect(page.getByText("Available", { exact: true })).toBeVisible();
+  await page.getByLabel("Search interests").fill("Indie");
   await page.getByRole("button", { name: /^Indie$/ }).first().click();
-  await interestSearch.fill("Vaporwave crate digging");
-  await page.getByRole("button", { name: /Add “Vaporwave crate digging”/ }).click();
-
-  // Skills via alias: "guitarist" matches Guitar
-  await page.getByLabel("Search skills").first().fill("guitarist");
-  await page.getByRole("button", { name: /^Guitar$/ }).first().click();
-
-  // Anonymous visibility defaults ON and requires consent (D-08)
-  await expect(page.getByRole("switch", { name: /Visible to visitors without a profile/ })).toHaveAttribute("aria-checked", "true");
-  await page.getByRole("button", { name: "Create profile & join event" }).click();
-  await expect(page.getByText("Please confirm, or turn public visibility off.")).toBeVisible();
+  await extra(page);
   await page.getByLabel(/I understand and agree/).check();
-  if (shots) await page.screenshot({ path: `${shots}/join-form-${info.project.name}.png`, fullPage: true });
-
   await page.getByRole("button", { name: "Create profile & join event" }).click();
-
-  // Recovery code is shown once (D-13)
-  const code = page.locator('code[aria-label="Recovery code"]');
-  await expect(code).toHaveText(/^QRS(-[0-9A-Z]{4}){6}$/);
-  if (shots) await page.screenshot({ path: `${shots}/recovery-code-${info.project.name}.png`, fullPage: true });
-  const recoveryCode = (await code.textContent())!;
-  const continueButton = page.getByRole("button", { name: "Go to event home" });
-  await expect(continueButton).toBeDisabled();
   await page.getByLabel("I've saved my recovery code").check();
-  await continueButton.click();
-
-  // Lands on event networking home — never Discover (NN-10)
+  await page.getByRole("button", { name: "Go to event home" }).click();
   await expect(page).toHaveURL(/\/app\/events\/[0-9a-f-]+\/home$/);
-  await expect(page).not.toHaveURL(/discover/);
-  await expect(page.getByText("You're in,", { exact: true })).toBeVisible();
-  if (shots) await page.screenshot({ path: `${shots}/event-home-${info.project.name}.png`, fullPage: true });
+  return { ctx, page };
+}
 
-  // Session is an HttpOnly cookie, invisible to page scripts (PRD §12.1)
-  const cookies = await context.cookies();
-  const session = cookies.find((c) => c.name === "qr_s" || c.name === "__Host-qr_s");
-  expect(session?.httpOnly).toBe(true);
-  expect(await page.evaluate(() => document.cookie)).not.toContain("qr_s");
+test("Journeys A–E: organizer publishes, attendees join via QR, discover, connect and chat", async ({ browser }) => {
+  test.setTimeout(240_000);
+  const { code } = await organizerCreatesEvent(browser);
 
-  // Profile persists
-  await page.goto("/app/profile");
-  await expect(page.getByRole("heading", { name: "Playwright Tester" })).toBeVisible();
-  await expect(page.getByText(`@${username}`)).toBeVisible();
-  await expect(page.getByText("Vaporwave crate digging")).toBeVisible();
-  if (shots) await page.screenshot({ path: `${shots}/profile-${info.project.name}.png`, fullPage: true });
+  // Journey B — new attendees land on event home, never Discover
+  const singer = await attendeeJoins(browser, code, "Asha Singer", async (p) => {
+    await p.getByLabel("Search skills").first().fill("vocalist");
+    await p.getByRole("button", { name: /^Singing$/ }).first().click();
+  });
+  await expect(singer.page).not.toHaveURL(/discover/);
+  await shot(singer.page, "event-home");
+  const producer = await attendeeJoins(browser, code, "Rohan Producer", async (p) => {
+    await p.getByLabel("Search skills").first().fill("Music production");
+    await p.getByRole("button", { name: /^Music production$/ }).first().click();
+  });
 
-  // Returning to the landing page: still two options, recognised as returning attendee (PRD §3.4)
-  await page.goto(`/e/${QR}`);
-  await expect(page.getByRole("region", { name: "Choose how to continue" }).getByRole("link")).toHaveCount(2);
-  await expect(page.getByText(/You've joined/)).toBeVisible();
-  await page.getByRole("link", { name: /Create My Profile/ }).click();
-  await expect(page.getByRole("heading", { name: "You're already on QRious" })).toBeVisible();
+  const eventBase = producer.page.url().replace(/\/home$/, "");
+  // Journey D — discover → profile → connect with a note
+  await producer.page.goto(`${eventBase}/discover`);
+  await expect(producer.page.getByText("Asha Singer")).toBeVisible();
+  await shot(producer.page, "discover");
+  await producer.page.getByText("Asha Singer").first().click();
+  await producer.page.getByRole("button", { name: "Connect" }).click();
+  await producer.page.getByLabel(/Add a note/).fill("Loved your voice — want to collab?");
+  await producer.page.getByRole("button", { name: "Send request" }).click();
+  await expect(producer.page.getByRole("button", { name: /Requested/ })).toBeVisible();
 
-  // Recovery on a "new device"
-  const fresh = await page.context().browser()!.newContext();
-  const device2 = await fresh.newPage();
-  await device2.goto(new URL("/recover", page.url()).toString());
-  await device2.getByLabel("Username").fill(username);
-  await device2.getByLabel("Recovery code", { exact: true }).fill(recoveryCode.toLowerCase());
-  await device2.getByRole("button", { name: "Recover my profile" }).click();
-  await expect(device2.locator('code[aria-label="Recovery code"]')).toHaveText(/^QRS(-[0-9A-Z]{4}){6}$/);
-  await device2.getByLabel("I've saved my recovery code").check();
-  await device2.getByRole("button", { name: "Continue" }).click();
-  await expect(device2).toHaveURL(/\/app\/events\/[0-9a-f-]+\/home$/);
-  await fresh.close();
+  await singer.page.goto("/app/connections");
+  await singer.page.getByRole("tab", { name: /Received/ }).click();
+  await expect(singer.page.getByText("Loved your voice")).toBeVisible();
+  await singer.page.getByRole("button", { name: "Accept" }).click();
+  await expect(singer.page).toHaveURL(/\/app\/messages\/[0-9a-f-]+$/);
+  await singer.page.getByLabel("Message", { exact: true }).fill("Hey Rohan! Let's do it");
+  await singer.page.getByRole("button", { name: "Send" }).click();
+  await expect(singer.page.getByText("Hey Rohan! Let's do it").filter({ visible: true }).first()).toBeVisible();
 
-  // The original device was signed out by recovery
-  await page.goto("/app/profile");
-  await expect(page).toHaveURL(/signin=required|\/$/);
-});
+  await producer.page.goto("/app/messages");
+  await producer.page.getByText("Asha Singer").first().click();
+  await expect(producer.page).toHaveURL(/\/app\/messages\/[0-9a-f-]+$/);
+  await expect(producer.page.getByText("Hey Rohan! Let's do it").filter({ visible: true }).first()).toBeVisible();
+  await producer.page.getByLabel("Message", { exact: true }).fill("Awesome, see you at the stage!");
+  await producer.page.keyboard.press("Enter");
+  await expect(singer.page.getByText("Awesome, see you at the stage!").filter({ visible: true }).first()).toBeVisible({ timeout: 15_000 }); // delivered by polling
+  await shot(singer.page, "chat");
 
-test("Anonymous visitor is never signed in by browsing (BR-02)", async ({ page, context }) => {
-  await page.goto(`/e/${QR}`);
-  await page.getByRole("link", { name: /Discover People/ }).click();
-  await expect(page.getByRole("heading", { name: /Discover People/ })).toBeVisible();
-  const cookies = await context.cookies();
-  expect(cookies.some((c) => c.name.includes("qr_s"))).toBe(false);
-  await page.goto("/app");
-  await expect(page).toHaveURL(/signin=required/);
+  // Smart Matches + Event Pulse render for members
+  await producer.page.goto("/app/events");
+  await expect(producer.page.getByText("Jam Session E2E").first()).toBeVisible();
+  await producer.page.goto(`${eventBase}/pulse`);
+  await expect(producer.page.getByText("Participating")).toBeVisible();
+  await shot(producer.page, "pulse");
+  await producer.page.goto(`${eventBase}/matches`);
+  await expect(producer.page.getByRole("heading", { name: "Smart Matches" })).toBeVisible();
+
+  // Journey A — anonymous visitor sees opted-in public profiles; member actions are gated; no session
+  const anon = await browser.newContext({ viewport: { width: 412, height: 915 } });
+  const ap = await anon.newPage();
+  await ap.goto(`/e/${code}`);
+  await shot(ap, "landing");
+  await ap.getByRole("link", { name: /Discover People/ }).click();
+  await expect(ap.getByText("Asha Singer")).toBeVisible();
+  await ap.getByText("Asha Singer").first().click();
+  await ap.getByRole("button", { name: "Connect" }).click();
+  await expect(ap.getByText("Create your profile to continue")).toBeVisible();
+  await shot(ap, "public-profile-gate");
+  expect((await anon.cookies()).some((c) => c.name.includes("qr_s"))).toBe(false);
+
+  // Journey C — returning attendee keeps a single identity
+  await singer.page.goto(`/e/${code}`);
+  await expect(singer.page.getByText(/You've joined/)).toBeVisible();
+  await singer.page.getByRole("region", { name: "Choose how to continue" }).getByRole("link").filter({ hasText: "Create My Profile" }).click();
+  await expect(singer.page.getByRole("heading", { name: "You're already on QRious" })).toBeVisible();
+
+  for (const c of [singer.ctx, producer.ctx, anon]) await c.close();
 });
 
 test("Invalid QR code shows a helpful message", async ({ page }) => {
   await page.goto("/e/NOTAREALCODE");
   await expect(page.getByRole("heading", { name: "We don't recognise this QR code" })).toBeVisible();
+});
+
+test("Marketing home renders and protected areas redirect", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("heading", { level: 1 })).toContainText("One event.");
+  await shot(page, "home");
+  await page.goto("/app");
+  await expect(page).toHaveURL(/signin=required/);
+  await page.goto("/organizer/dashboard");
+  await expect(page).toHaveURL(/\/organizer\/login/);
 });

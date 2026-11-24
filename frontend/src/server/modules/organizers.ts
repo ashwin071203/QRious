@@ -1,0 +1,334 @@
+import "server-only";
+import { randomBytes, scrypt as scryptCb, timingSafeEqual } from "node:crypto";
+import { promisify } from "node:util";
+import { and, desc, eq, sql } from "drizzle-orm";
+import { schema, type Executor } from "@/server/db";
+import { ORGANIZER_SESSION, config } from "@/server/core/config";
+import { AppError, FieldErrors, conflict, forbidden, isUniqueViolation, notFound } from "@/server/core/errors";
+import type { Ctx } from "@/server/core/http";
+import { reply } from "@/server/core/http";
+import { audit } from "@/server/core/platform";
+import { removeMedia, saveSquareImage } from "@/server/core/media";
+import { cleanText, generateRecoveryCode, hashRecoveryCode, newToken, normalizeHttpsUrl, normalizeRecoveryCode, sha256, slugify, userAgentSummary, verifyRecoveryCode } from "@/server/lib/rules";
+import { orgHasFeature } from "./billing";
+
+const { organizerUsers, organizerSessions, organizerRecoveryCodes, organizations, organizationMembers, events } = schema;
+const scrypt = promisify(scryptCb) as (pw: string, salt: Buffer, len: number, opts: object) => Promise<Buffer>;
+export const ORGANIZER_COOKIE = "qr_o";
+
+// ---------- Passwords ----------
+const SCRYPT = { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
+export async function hashPassword(pw: string): Promise<string> {
+  const salt = randomBytes(16);
+  const hash = await scrypt(pw, salt, 32, SCRYPT);
+  return `scrypt$${SCRYPT.N}$${SCRYPT.r}$${SCRYPT.p}$${salt.toString("base64")}$${hash.toString("base64")}`;
+}
+export async function verifyPassword(pw: string, stored: string): Promise<boolean> {
+  const [alg, n, r, p, salt, hash] = stored.split("$");
+  if (alg !== "scrypt" || !salt || !hash) return false;
+  const expected = Buffer.from(hash, "base64");
+  const actual = await scrypt(pw, Buffer.from(salt, "base64"), expected.length, { N: Number(n), r: Number(r), p: Number(p), maxmem: SCRYPT.maxmem });
+  return timingSafeEqual(actual, expected);
+}
+const COMMON = new Set(["password1234", "123456789012", "qwertyuiopas", "passwordpassword", "iloveyou1234", "adminadmin12", "qrious123456"]);
+export function passwordProblem(pw: unknown): string | null {
+  if (typeof pw !== "string" || pw.length < 12) return "Use at least 12 characters.";
+  if (pw.length > 200) return "Use at most 200 characters.";
+  if (COMMON.has(pw.toLowerCase()) || /^(.)\1+$/.test(pw)) return "That password is too easy to guess.";
+  return null;
+}
+const normEmail = (e: unknown) => (typeof e === "string" ? e.trim().toLowerCase() : "");
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+// ---------- Sessions ----------
+export type OrganizerAuth = { userId: string; sessionId: string; isAdmin: boolean; displayName: string; email: string };
+
+async function createOrgSession(ctx: Ctx, db: Executor, userId: string, isAdmin: boolean) {
+  const { token, hash } = newToken();
+  const expiresAt = new Date(Date.now() + (isAdmin ? ORGANIZER_SESSION.adminIdleMs : ORGANIZER_SESSION.idleMs));
+  await db.insert(organizerSessions).values({ userId, tokenHash: hash, createdAt: new Date(), lastSeenAt: new Date(), expiresAt, userAgentSummary: userAgentSummary(ctx.userAgent) });
+  ctx.setCookie(ORGANIZER_COOKIE, token, { expires: expiresAt });
+}
+
+export async function maybeOrganizer(ctx: Ctx): Promise<OrganizerAuth | null> {
+  return ctx.once("organizer", async () => {
+    const token = ctx.readSessionCookie(ORGANIZER_COOKIE);
+    if (!token || token.length > 100) return null;
+    const [row] = await ctx.db.select({ s: organizerSessions, u: organizerUsers }).from(organizerSessions)
+      .innerJoin(organizerUsers, eq(organizerUsers.id, organizerSessions.userId)).where(eq(organizerSessions.tokenHash, sha256(token))).limit(1);
+    const now = new Date();
+    if (!row || row.s.revokedAt || row.s.expiresAt <= now || row.u.status !== "active" || row.s.createdAt < row.u.passwordChangedAt) {
+      ctx.clearCookie(ORGANIZER_COOKIE);
+      return null;
+    }
+    if (now.getTime() - row.s.lastSeenAt.getTime() > 3_600_000) {
+      const expiresAt = new Date(now.getTime() + (row.u.isAdmin ? ORGANIZER_SESSION.adminIdleMs : ORGANIZER_SESSION.idleMs));
+      await ctx.db.update(organizerSessions).set({ lastSeenAt: now, expiresAt }).where(eq(organizerSessions.id, row.s.id));
+      ctx.setCookie(ORGANIZER_COOKIE, token, { expires: expiresAt });
+    }
+    return { userId: row.u.id, sessionId: row.s.id, isAdmin: row.u.isAdmin, displayName: row.u.displayName, email: row.u.email };
+  });
+}
+
+export async function requireOrganizer(ctx: Ctx) {
+  const o = await maybeOrganizer(ctx);
+  if (!o) throw new AppError(401, "organizer_login_required", "Please sign in to your organizer account.");
+  return o;
+}
+
+export async function requireAdmin(ctx: Ctx) {
+  const o = await requireOrganizer(ctx);
+  if (!o.isAdmin) throw forbidden("Platform administrators only.");
+  return o;
+}
+
+async function issueOrgRecovery(db: Executor, userId: string) {
+  await db.update(organizerRecoveryCodes).set({ status: "rotated" }).where(and(eq(organizerRecoveryCodes.userId, userId), eq(organizerRecoveryCodes.status, "active")));
+  const raw = generateRecoveryCode();
+  const salt = randomBytes(16);
+  await db.insert(organizerRecoveryCodes).values({ userId, salt, codeHash: hashRecoveryCode(normalizeRecoveryCode(raw)!, salt, config.recoveryPepper) });
+  return raw;
+}
+
+export async function register(ctx: Ctx) {
+  await ctx.limit("org-register", 20, 3600);
+  const b = await ctx.json<{ email?: string; password?: string; displayName?: string }>();
+  const errors = new FieldErrors();
+  const email = normEmail(b.email);
+  if (!EMAIL_RE.test(email) || email.length > 254) errors.add("email", "Enter a valid email address.");
+  const pp = passwordProblem(b.password);
+  if (pp) errors.add("password", pp);
+  const name = cleanText(b.displayName);
+  if (!name || name.length > 100) errors.add("displayName", "Enter your name (up to 100 characters).");
+  errors.throwIfAny();
+  const isAdmin = config.adminEmails.includes(email);
+  try {
+    const result = await ctx.db.transaction(async (tx) => {
+      const [u] = await tx.insert(organizerUsers).values({ email: b.email!.trim(), emailNormalized: email, passwordHash: await hashPassword(b.password!), displayName: name!, isAdmin, passwordChangedAt: new Date(Date.now() - 1000) }).returning();
+      const code = await issueOrgRecovery(tx, u!.id);
+      await createOrgSession(ctx, tx, u!.id, isAdmin);
+      await audit(tx, { actorType: "organizer", actorId: u!.id, action: "organizer.registered", ip: ctx.ip });
+      return code;
+    });
+    return reply(201, { recoveryCode: result });
+  } catch (e) {
+    if (isUniqueViolation(e, "ux_organizer_users_email")) throw conflict("email_taken", "An account with this email already exists. Sign in instead.");
+    throw e;
+  }
+}
+
+export async function login(ctx: Ctx) {
+  await ctx.limit("org-login", 30, 600);
+  const b = await ctx.json<{ email?: string; password?: string }>();
+  const email = normEmail(b.email);
+  await ctx.limit("org-login-account", 10, 600, `email:${email}`);
+  const fail = () => new AppError(401, "invalid_credentials", "Email or password is incorrect.");
+  const [u] = await ctx.db.select().from(organizerUsers).where(eq(organizerUsers.emailNormalized, email)).limit(1);
+  if (!u) { await hashPassword("timing-equalizer-password"); throw fail(); }
+  if (u.lockedUntil && u.lockedUntil > new Date()) throw new AppError(423, "account_locked", "Too many failed attempts. Try again in 15 minutes or use your recovery code.");
+  if (u.status !== "active") throw forbidden("This account is suspended.", "account_suspended");
+  if (typeof b.password !== "string" || !(await verifyPassword(b.password, u.passwordHash))) {
+    const failed = u.failedLogins + 1;
+    await ctx.db.update(organizerUsers).set(failed >= 5 ? { failedLogins: 0, lockedUntil: new Date(Date.now() + 15 * 60_000) } : { failedLogins: failed }).where(eq(organizerUsers.id, u.id));
+    await audit(ctx.db, { actorType: "organizer", actorId: u.id, action: "organizer.login_failed", ip: ctx.ip });
+    throw fail();
+  }
+  await ctx.db.update(organizerUsers).set({ failedLogins: 0, lockedUntil: null }).where(eq(organizerUsers.id, u.id));
+  await createOrgSession(ctx, ctx.db, u.id, u.isAdmin);
+  await audit(ctx.db, { actorType: u.isAdmin ? "admin" : "organizer", actorId: u.id, action: "organizer.login", ip: ctx.ip });
+  return { ok: true, isAdmin: u.isAdmin };
+}
+
+export async function logout(ctx: Ctx) {
+  const o = await maybeOrganizer(ctx);
+  if (o) await ctx.db.update(organizerSessions).set({ revokedAt: new Date() }).where(eq(organizerSessions.id, o.sessionId));
+  ctx.clearCookie(ORGANIZER_COOKIE);
+  return reply(204);
+}
+
+/** Organizer account recovery: email + recovery code → new password (no email provider needed). */
+export async function recoverOrganizer(ctx: Ctx) {
+  await ctx.limit("org-recover", 10, 900);
+  const b = await ctx.json<{ email?: string; recoveryCode?: string; newPassword?: string }>();
+  const pp = passwordProblem(b.newPassword);
+  if (pp) throw new AppError(400, "validation_failed", "One or more fields are invalid.", { newPassword: [pp] });
+  const fail = () => new AppError(401, "recovery_failed", "We couldn't recover an account with that email and recovery code.");
+  const [u] = await ctx.db.select().from(organizerUsers).where(eq(organizerUsers.emailNormalized, normEmail(b.email))).limit(1);
+  const code = normalizeRecoveryCode(b.recoveryCode);
+  if (!u || u.status !== "active") throw fail();
+  const result = await ctx.db.transaction(async (tx) => {
+    const rows = await tx.execute<{ id: string; code_hash: Buffer; salt: Buffer; failed_attempts: number; locked_until: Date | null }>(
+      sql`SELECT id, code_hash, salt, failed_attempts, locked_until FROM organizer_recovery_codes WHERE user_id = ${u.id} AND status = 'active' FOR UPDATE`);
+    const rc = rows.rows[0];
+    if (!rc || (rc.locked_until && new Date(rc.locked_until) > new Date())) return null;
+    if (!code || !verifyRecoveryCode(code, rc.salt, rc.code_hash, config.recoveryPepper)) {
+      const n = rc.failed_attempts + 1;
+      await tx.update(organizerRecoveryCodes).set(n >= 5 ? { failedAttempts: 0, lockedUntil: new Date(Date.now() + 3_600_000) } : { failedAttempts: n }).where(eq(organizerRecoveryCodes.id, rc.id));
+      return null;
+    }
+    await tx.update(organizerRecoveryCodes).set({ status: "used", usedAt: new Date() }).where(eq(organizerRecoveryCodes.id, rc.id));
+    await tx.update(organizerUsers).set({ passwordHash: await hashPassword(b.newPassword!), passwordChangedAt: new Date(), failedLogins: 0, lockedUntil: null }).where(eq(organizerUsers.id, u.id));
+    await tx.update(organizerSessions).set({ revokedAt: new Date() }).where(and(eq(organizerSessions.userId, u.id), sql`revoked_at IS NULL`));
+    const newCode = await issueOrgRecovery(tx, u.id);
+    await new Promise((r) => setTimeout(r, 5)); // session created after passwordChangedAt
+    await createOrgSession(ctx, tx, u.id, u.isAdmin);
+    await audit(tx, { actorType: "organizer", actorId: u.id, action: "organizer.recovered", ip: ctx.ip });
+    return newCode;
+  });
+  if (!result) throw fail();
+  return { newRecoveryCode: result };
+}
+
+export async function changePassword(ctx: Ctx) {
+  const o = await requireOrganizer(ctx);
+  const b = await ctx.json<{ currentPassword?: string; newPassword?: string }>();
+  const [u] = await ctx.db.select().from(organizerUsers).where(eq(organizerUsers.id, o.userId)).limit(1);
+  if (!u || typeof b.currentPassword !== "string" || !(await verifyPassword(b.currentPassword, u.passwordHash)))
+    throw new AppError(400, "validation_failed", "One or more fields are invalid.", { currentPassword: ["Current password is incorrect."] });
+  const pp = passwordProblem(b.newPassword);
+  if (pp) throw new AppError(400, "validation_failed", "One or more fields are invalid.", { newPassword: [pp] });
+  await ctx.db.update(organizerUsers).set({ passwordHash: await hashPassword(b.newPassword!), passwordChangedAt: new Date() }).where(eq(organizerUsers.id, u.id));
+  await new Promise((r) => setTimeout(r, 5));
+  await createOrgSession(ctx, ctx.db, u.id, u.isAdmin);
+  return reply(204);
+}
+
+export async function regenerateOrgRecovery(ctx: Ctx) {
+  const o = await requireOrganizer(ctx);
+  return { recoveryCode: await ctx.db.transaction((tx) => issueOrgRecovery(tx, o.userId)) };
+}
+
+/** One-time admin bootstrap: the deployment's QRIOUS_ADMIN_BOOTSTRAP_TOKEN promotes the caller if no admin exists. */
+export async function bootstrapAdmin(ctx: Ctx) {
+  const o = await requireOrganizer(ctx);
+  const b = await ctx.json<{ token?: string }>();
+  const expected = process.env.QRIOUS_ADMIN_BOOTSTRAP_TOKEN ?? "";
+  if (expected.length < 24 || typeof b.token !== "string" || b.token.length !== expected.length || !timingSafeEqual(Buffer.from(b.token), Buffer.from(expected)))
+    throw forbidden("Invalid bootstrap token.");
+  const [{ n }] = (await ctx.db.execute<{ n: number }>(sql`SELECT count(*)::int AS n FROM organizer_users WHERE is_admin = true`)).rows as [{ n: number }];
+  if (n > 0) throw conflict("admin_exists", "A platform administrator already exists.");
+  await ctx.db.update(organizerUsers).set({ isAdmin: true }).where(eq(organizerUsers.id, o.userId));
+  await audit(ctx.db, { actorType: "admin", actorId: o.userId, action: "admin.bootstrapped", ip: ctx.ip });
+  return { ok: true };
+}
+
+// ---------- Organizations (M13) ----------
+export async function myOrganizations(db: Executor, userId: string) {
+  return db.select({ id: organizations.id, name: organizations.name, slug: organizations.slug, logoUrl: organizations.logoUrl, status: organizations.status, role: organizationMembers.role })
+    .from(organizationMembers).innerJoin(organizations, eq(organizations.id, organizationMembers.organizationId))
+    .where(eq(organizationMembers.organizerUserId, userId)).orderBy(organizations.name);
+}
+
+export async function organizerMe(ctx: Ctx) {
+  const o = await maybeOrganizer(ctx);
+  if (!o) return { authenticated: false };
+  return { authenticated: true, user: { id: o.userId, displayName: o.displayName, email: o.email, isAdmin: o.isAdmin }, organizations: await myOrganizations(ctx.db, o.userId) };
+}
+
+/** Membership check: every organizer action is scoped to orgs the caller belongs to (BR-21). */
+export async function requireOrgMember(ctx: Ctx, organizationId: string, ownerOnly = false) {
+  const o = await requireOrganizer(ctx);
+  const [m] = await ctx.db.select({ role: organizationMembers.role, status: organizations.status }).from(organizationMembers)
+    .innerJoin(organizations, eq(organizations.id, organizationMembers.organizationId))
+    .where(and(eq(organizationMembers.organizationId, organizationId), eq(organizationMembers.organizerUserId, o.userId))).limit(1);
+  if (!m) throw notFound("Organization not found.");
+  if (m.status !== "active") throw forbidden("This organization is suspended. Contact QRious support.", "organization_suspended");
+  if (ownerOnly && m.role !== "owner") throw forbidden("Only the organization owner can do this.");
+  return { organizer: o, role: m.role };
+}
+
+function orgFields(b: Record<string, unknown>, errors: FieldErrors, requireName: boolean) {
+  const name = cleanText(b.name);
+  if (requireName || b.name !== undefined) { if (!name || name.length > 120) errors.add("name", "Enter an organization name (up to 120 characters)."); }
+  const description = cleanText(b.description);
+  if (description && description.length > 2000) errors.add("description", "Up to 2000 characters.");
+  const contactEmail = cleanText(b.contactEmail);
+  if (contactEmail && !EMAIL_RE.test(contactEmail)) errors.add("contactEmail", "Enter a valid email.");
+  const contactPhone = cleanText(b.contactPhone);
+  if (contactPhone && !/^[+0-9 ()-]{6,30}$/.test(contactPhone)) errors.add("contactPhone", "Enter a valid phone number.");
+  const web = normalizeHttpsUrl(b.website as string);
+  if (web && typeof web === "object") errors.add("website", web.error);
+  return { name, description, contactEmail, contactPhone, website: typeof web === "string" ? web : null };
+}
+
+export async function createOrganization(ctx: Ctx) {
+  const o = await requireOrganizer(ctx);
+  const b = await ctx.json<Record<string, unknown>>();
+  const errors = new FieldErrors();
+  const f = orgFields(b, errors, true);
+  errors.throwIfAny();
+  const existing = await myOrganizations(ctx.db, o.userId);
+  if (existing.length >= 5) throw conflict("too_many_organizations", "You can belong to up to 5 organizations.");
+  const org = await ctx.db.transaction(async (tx) => {
+    let slug = slugify(f.name!);
+    const taken = await tx.execute(sql`SELECT 1 FROM organizations WHERE slug = ${slug}`);
+    if (taken.rows.length) slug = `${slug}-${randomBytes(3).toString("hex")}`;
+    const [org] = await tx.insert(organizations).values({ name: f.name!, slug, description: f.description, contactEmail: f.contactEmail, contactPhone: f.contactPhone, website: f.website, createdBy: o.userId }).returning();
+    await tx.insert(organizationMembers).values({ organizationId: org!.id, organizerUserId: o.userId, role: "owner" });
+    await audit(tx, { actorType: "organizer", actorId: o.userId, action: "organization.created", targetType: "organization", targetId: org!.id, organizationId: org!.id });
+    return org!;
+  });
+  return reply(201, org);
+}
+
+export async function getOrganization(ctx: Ctx) {
+  const { role } = await requireOrgMember(ctx, ctx.params.orgId!);
+  const [org] = await ctx.db.select().from(organizations).where(eq(organizations.id, ctx.params.orgId!)).limit(1);
+  return { ...org, role };
+}
+
+export async function updateOrganization(ctx: Ctx) {
+  const { organizer } = await requireOrgMember(ctx, ctx.params.orgId!, true);
+  const b = await ctx.json<Record<string, unknown>>();
+  const errors = new FieldErrors();
+  const f = orgFields(b, errors, false);
+  errors.throwIfAny();
+  const patch: Partial<typeof organizations.$inferInsert> = { updatedAt: new Date() };
+  if (b.name !== undefined) patch.name = f.name!;
+  if (b.description !== undefined) patch.description = f.description;
+  if (b.contactEmail !== undefined) patch.contactEmail = f.contactEmail;
+  if (b.contactPhone !== undefined) patch.contactPhone = f.contactPhone;
+  if (b.website !== undefined) patch.website = f.website;
+  await ctx.db.update(organizations).set(patch).where(eq(organizations.id, ctx.params.orgId!));
+  await audit(ctx.db, { actorType: "organizer", actorId: organizer.userId, action: "organization.updated", targetType: "organization", targetId: ctx.params.orgId, organizationId: ctx.params.orgId });
+  return getOrganization(ctx);
+}
+
+export async function uploadLogo(ctx: Ctx) {
+  await requireOrgMember(ctx, ctx.params.orgId!, true);
+  const form = await ctx.req.formData().catch(() => null);
+  const saved = await saveSquareImage((form?.get("file") as Blob | null) ?? null, "logos", [256]);
+  const [org] = await ctx.db.select().from(organizations).where(eq(organizations.id, ctx.params.orgId!)).limit(1);
+  await ctx.db.update(organizations).set({ logoUrl: saved[256]!.url, logoKey: saved[256]!.key, updatedAt: new Date() }).where(eq(organizations.id, ctx.params.orgId!));
+  await removeMedia([org?.logoUrl]);
+  return { logoUrl: saved[256]!.url };
+}
+
+export async function removeLogo(ctx: Ctx) {
+  await requireOrgMember(ctx, ctx.params.orgId!, true);
+  const [org] = await ctx.db.select().from(organizations).where(eq(organizations.id, ctx.params.orgId!)).limit(1);
+  await ctx.db.update(organizations).set({ logoUrl: null, logoKey: null }).where(eq(organizations.id, ctx.params.orgId!));
+  await removeMedia([org?.logoUrl]);
+  return reply(204);
+}
+
+export async function dashboard(ctx: Ctx) {
+  await requireOrgMember(ctx, ctx.params.orgId!);
+  const orgId = ctx.params.orgId!;
+  const { syncStatuses } = await import("./events-core");
+  const ids = (await ctx.db.select({ id: events.id }).from(events).where(eq(events.organizationId, orgId))).map((r) => r.id);
+  await syncStatuses(ctx.db, ids);
+  const [t] = (await ctx.db.execute<{ total: number; active: number; participants: number; open: number }>(sql`
+    SELECT count(*)::int AS total, count(*) FILTER (WHERE status IN ('active','networking_paused'))::int AS active,
+      coalesce(sum(participant_count), 0)::int AS participants,
+      (SELECT count(*)::int FROM event_participants ep JOIN events e ON e.id = ep.event_id JOIN event_availability ea ON ea.participant_id = ep.id
+        WHERE e.organization_id = ${orgId} AND e.status = 'active' AND ep.status = 'active' AND ep.discovery_paused = false
+        AND ea.status IN ('available_now','open_to_conversations','meet_new_people','looking_for_collaborators','quick_conversations')) AS open
+    FROM events WHERE organization_id = ${orgId} AND status <> 'archived'`)).rows;
+  const recent = await ctx.db.select().from(events).where(eq(events.organizationId, orgId)).orderBy(desc(events.updatedAt)).limit(6);
+  return {
+    totals: { events: t?.total ?? 0, activeEvents: t?.active ?? 0, participants: t?.participants ?? 0, openToTalkNow: t && t.open >= 5 ? t.open : null },
+    recentEvents: recent.map((e) => ({ id: e.id, name: e.name, status: e.status, startsAt: e.startsAt, endsAt: e.endsAt, timeZone: e.timeZone, participantCount: e.participantCount, bannerUrl: e.bannerUrl })),
+    plan: { pro: await orgHasFeature(ctx.db, orgId, "org.pulse.advanced") },
+  };
+}

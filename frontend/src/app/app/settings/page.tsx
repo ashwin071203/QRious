@@ -1,7 +1,11 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { Bell, ShieldBan, Trash2 } from "lucide-react";
+import { Avatar } from "@/components/ui/Misc";
+import { ConfirmDialog } from "@/components/ui/Overlay";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
 import { Eye, KeyRound, LogOut, MonitorSmartphone, ShieldCheck, X } from "lucide-react";
@@ -24,8 +28,16 @@ export default function SettingsPage() {
       <PageContainer className="max-w-2xl space-y-5">
         <h1 className="font-display text-2xl font-bold">Privacy &amp; settings</h1>
         {profile ? <PrivacySection profile={profile} /> : <Skeleton className="h-48" />}
+        <NotificationPrefsSection />
+        <BlockedSection />
         <RecoverySection />
         <SessionsSection />
+        <section className="card flex flex-wrap gap-2 p-5">
+          <Link href="/app/premium" className="rounded-xl border border-line-strong px-3 py-2 text-sm hover:border-accent/50">Plan &amp; billing</Link>
+          <Link href="/app/saved" className="rounded-xl border border-line-strong px-3 py-2 text-sm hover:border-accent/50">Saved profiles</Link>
+          <Link href="/app/events" className="rounded-xl border border-line-strong px-3 py-2 text-sm hover:border-accent/50">My events</Link>
+        </section>
+        <DeleteAccountSection />
       </PageContainer>
       <AttendeeNav />
     </>
@@ -224,6 +236,70 @@ function SessionsSection() {
         <Button variant="danger" icon={<LogOut className="size-4" />} onClick={signOut}>Sign out</Button>
       </div>
       <p className="text-xs text-text-2">Before signing out, make sure you&apos;ve saved your recovery code. It&apos;s the only way back in.</p>
+    </section>
+  );
+}
+
+function NotificationPrefsSection() {
+  const toast = useToast();
+  const { data, refetch } = useQuery({ queryKey: ["notification-prefs"], queryFn: () => api<Record<string, boolean>>("/me/notification-preferences") });
+  const labels: [string, string][] = [["connectionRequests", "New connection requests"], ["connectionAccepted", "Accepted requests"], ["messages", "New messages"], ["eventUpdates", "Event updates"], ["billing", "Billing"]];
+  async function set(key: string, value: boolean) {
+    try { await api("/me/notification-preferences", { method: "PUT", body: { ...data, [key]: value } }); refetch(); }
+    catch (e) { toast("error", e instanceof ApiError ? e.message : "Couldn't save."); }
+  }
+  return (
+    <section className="card space-y-4 p-5">
+      <SectionTitle icon={<Bell className="size-5" />} title="Notifications" description="In-app notifications you want to receive." />
+      {!data ? <Skeleton className="h-32" /> : labels.map(([k, l]) => <Toggle key={k} checked={!!data[k]} onChange={(v) => set(k, v)} label={l} />)}
+    </section>
+  );
+}
+
+function BlockedSection() {
+  const toast = useToast();
+  const { data, refetch } = useQuery({ queryKey: ["blocks"], queryFn: () => api<{ profileId: string; displayName: string; username: string; thumbnailUrl: string | null }[]>("/me/blocks") });
+  return (
+    <section className="card space-y-4 p-5">
+      <SectionTitle icon={<ShieldBan className="size-5" />} title="Blocked people" description="They can't find, connect with or message you." />
+      {!data ? <Skeleton className="h-16" /> : data.length === 0 ? <p className="text-sm text-text-2">You haven&apos;t blocked anyone.</p> : (
+        <ul className="divide-y divide-line">
+          {data.map((b) => (
+            <li key={b.profileId} className="flex items-center gap-3 py-2.5">
+              <Avatar name={b.displayName} src={b.thumbnailUrl} size={36} />
+              <span className="min-w-0 flex-1 truncate text-sm">{b.displayName} <span className="text-text-2">@{b.username}</span></span>
+              <Button size="sm" variant="ghost" onClick={async () => { await api(`/me/blocks/${b.profileId}`, { method: "DELETE" }); toast("success", "Unblocked"); refetch(); }}>Unblock</Button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function DeleteAccountSection() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const { data, refetch } = useQuery({ queryKey: ["deletion"], queryFn: () => api<{ pending: boolean; scheduledFor: string | null }>("/me/deletion-request") });
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  return (
+    <section className="card space-y-3 border-error/20 p-5">
+      <SectionTitle icon={<Trash2 className="size-5" />} title="Delete account" description="Your profile is hidden immediately and permanently deleted after 14 days." />
+      {data?.pending ? (
+        <div className="space-y-2 text-sm">
+          <p className="text-warning">Deletion scheduled for {data.scheduledFor ? formatDateTime(data.scheduledFor) : "soon"}.</p>
+          <Button variant="secondary" loading={busy} onClick={async () => { setBusy(true); await api("/me/deletion-request", { method: "DELETE" }).catch(() => {}); await qc.invalidateQueries(); refetch(); setBusy(false); }}>Cancel deletion</Button>
+        </div>
+      ) : <Button variant="danger" onClick={() => setOpen(true)}>Delete my account</Button>}
+      <ConfirmDialog open={open} onClose={() => setOpen(false)} danger busy={busy} confirmLabel="Delete account" title="Delete your account?"
+        body="Your profile will be hidden from everyone right away and other devices signed out. After 14 days your profile, photo and connections are permanently removed. Messages you sent remain visible to the other person as 'Deleted user'. You can cancel within 14 days from this device."
+        onConfirm={async () => {
+          setBusy(true);
+          try { await api("/me/deletion-request", { method: "POST" }); toast("success", "Deletion scheduled"); setOpen(false); await qc.invalidateQueries(); refetch(); }
+          catch (e) { toast("error", e instanceof ApiError ? e.message : "Couldn't schedule deletion."); }
+          finally { setBusy(false); }
+        }} />
     </section>
   );
 }
