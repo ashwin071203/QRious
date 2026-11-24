@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/QRious.Api/QRious.Api.csproj" />
+    <Project Path="src/QRious.Application/QRious.Application.csproj" />
+    <Project Path="src/QRious.Domain/QRious.Domain.csproj" />
+    <Project Path="src/QRious.Infrastructure/QRious.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/QRious.IntegrationTests/QRious.IntegrationTests.csproj" />
+    <Project Path="tests/QRious.UnitTests/QRious.UnitTests.csproj" />
+  </Folder>
+</Solution>

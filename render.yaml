@@ -1,0 +1,52 @@
+# Render Blueprint — QRious API on the FREE plan (staging). See docs/08-deployment-architecture.md.
+# Database: Neon free tier (Render's free Postgres expires after 30 days). Storage: Cloudflare R2 or Supabase Storage.
+services:
+  - type: web
+    name: qrious-api
+    runtime: docker
+    plan: free
+    region: singapore
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health/ready
+    autoDeploy: true
+    envVars:
+      - key: ASPNETCORE_ENVIRONMENT
+        value: Staging
+      - key: Database__MigrateOnStartup
+        value: "true"
+      - key: Database__SeedDemoData
+        value: "true"
+      - key: Auth__Cookie__Name
+        value: __Host-qr_s
+      - key: Auth__Cookie__Secure
+        value: "true"
+      - key: Storage__Provider
+        value: s3
+      - key: Storage__Region
+        value: auto
+      - key: Storage__ForcePathStyle
+        value: "true"
+      # Secrets: set these in the Render dashboard (never commit values).
+      - key: ConnectionStrings__Default
+        sync: false
+      - key: App__WebOrigins__0
+        sync: false
+      - key: App__PublicWebUrl
+        sync: false
+      - key: Security__RecoveryPepper
+        generateValue: true
+      - key: Security__IpHashSalt
+        generateValue: true
+      - key: Security__ProxySecret
+        sync: false
+      - key: Storage__ServiceUrl
+        sync: false
+      - key: Storage__Bucket
+        sync: false
+      - key: Storage__AccessKey
+        sync: false
+      - key: Storage__SecretKey
+        sync: false
+      - key: Storage__PublicBaseUrl
+        sync: false

@@ -1,0 +1,108 @@
+@import "tailwindcss";
+
+/* QRious design tokens — PRD §9.2 "Premium Dark Violet" */
+:root {
+  --bg: #100b1d;
+  --bg-2: #19112b;
+  --card: #211735;
+  --card-2: #2a1e42;
+  --primary: #8b5cf6;
+  --accent: #a78bfa;
+  --accent-light: #c4b5fd;
+  --pink: #e879f9;
+  --text: #f8f7fc;
+  --text-2: #a9a0ba;
+  --success: #34d399;
+  --error: #f87171;
+  --warning: #fbbf24;
+  --border: rgba(196, 181, 253, 0.12);
+  --border-strong: rgba(196, 181, 253, 0.24);
+  --grad-primary: linear-gradient(135deg, #8b5cf6 0%, #e879f9 100%);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-2: var(--bg-2);
+  --color-card: var(--card);
+  --color-card-2: var(--card-2);
+  --color-primary: var(--primary);
+  --color-accent: var(--accent);
+  --color-accent-light: var(--accent-light);
+  --color-pink: var(--pink);
+  --color-text: var(--text);
+  --color-text-2: var(--text-2);
+  --color-success: var(--success);
+  --color-error: var(--error);
+  --color-warning: var(--warning);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --font-sans: var(--font-inter);
+  --font-display: var(--font-space-grotesk);
+  --shadow-glow: 0 10px 40px -10px rgba(139, 92, 246, 0.55);
+  --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 20px 40px -24px rgba(0, 0, 0, 0.6);
+}
+
+html {
+  background: var(--bg);
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Clear, consistent focus states (PRD §9.4) */
+:focus-visible {
+  outline: 2px solid var(--accent-light);
+  outline-offset: 2px;
+  border-radius: 10px;
+}
+
+::selection {
+  background: rgba(139, 92, 246, 0.45);
+}
+
+@layer components {
+  .bg-grad-primary {
+    background-image: var(--grad-primary);
+  }
+  .text-grad {
+    background-image: linear-gradient(120deg, #c4b5fd 0%, #e879f9 60%, #a78bfa 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .glass {
+    background: rgba(33, 23, 53, 0.62);
+    border: 1px solid var(--border);
+    backdrop-filter: blur(18px) saturate(140%);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 1.25rem;
+    box-shadow: var(--shadow-card);
+  }
+  .ambient {
+    background:
+      radial-gradient(60% 50% at 15% 0%, rgba(139, 92, 246, 0.22), transparent 70%),
+      radial-gradient(50% 40% at 100% 10%, rgba(232, 121, 249, 0.14), transparent 70%),
+      var(--bg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
