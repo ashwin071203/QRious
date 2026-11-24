@@ -4,17 +4,18 @@ import { use, useCallback, useEffect, useLayoutEffect, useRef, useState } from "
 import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowLeft, Check, CheckCheck, Flag, Loader2, SendHorizontal } from "lucide-react";
+import { ArrowLeft, Check, CheckCheck, Flag, Info, Loader2, SendHorizontal } from "lucide-react";
 import { Avatar, Logo } from "@/components/ui/Misc";
 import { ReportDialog } from "@/components/People";
+import { GroupAvatar, GroupInfoDialog } from "@/components/messaging/GroupDialogs";
 import { useToast } from "@/components/Providers";
 import { api, ApiError, newIdempotencyKey } from "@/lib/api";
 import type { ChatMessage, Thread } from "@/lib/types";
-import { cn } from "@/lib/format";
+import { cn, presenceLabel } from "@/lib/format";
 
 const POLL_MS = 3000;
 
-/** One-to-one chat (M10). Near-real-time via short polling (D-29); idempotent sends; read receipts; typing indicator. */
+/** Direct chats and groups (M10). Near-real-time via short polling (D-29); idempotent sends; read receipts; typing; activity status. */
 export function ThreadView({ params }: { params: Promise<{ conversationId: string }> }) {
   const { conversationId } = use(params);
   const qc = useQueryClient();
@@ -26,12 +27,14 @@ export function ThreadView({ params }: { params: Promise<{ conversationId: strin
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
   const lastTyping = useRef(0);
   const lastRead = useRef(0);
   const stickToBottom = useRef(true);
 
   const lastId = messages.filter((m) => !m.pending).at(-1)?.id ?? 0;
+  const isGroup = thread?.conversation.kind === "group";
 
   const merge = useCallback((incoming: ChatMessage[]) => {
     setMessages((cur) => {
@@ -40,6 +43,13 @@ export function ThreadView({ params }: { params: Promise<{ conversationId: strin
       return [...byClient.values()].sort((a, b) => (a.pending ? 1 : 0) - (b.pending ? 1 : 0) || a.id - b.id);
     });
   }, []);
+
+  const load = useCallback(async () => {
+    const t = await api<Thread>(`/conversations/${conversationId}/messages`);
+    setThread(t);
+    merge(t.messages);
+    setHasMore(t.hasMore);
+  }, [conversationId, merge]);
 
   // Initial load
   useEffect(() => {
@@ -53,23 +63,27 @@ export function ThreadView({ params }: { params: Promise<{ conversationId: strin
     return () => { cancelled = true; };
   }, [conversationId]);
 
-  // Poll for new messages, read receipts and typing while visible
+  // Poll for new messages, read receipts, typing, activity and group changes while visible
   useEffect(() => {
     if (!thread) return;
     const tick = async () => {
       if (document.visibilityState !== "visible") return;
       try {
         const t = await api<Thread>(`/conversations/${conversationId}/messages?after=${lastId}`);
-        setThread((prev) => (prev ? { ...prev, canSend: t.canSend, otherTyping: t.otherTyping, otherLastReadMessageId: t.otherLastReadMessageId } : t));
+        setThread((prev) => (prev ? { ...prev, canSend: t.canSend, otherTyping: t.otherTyping, typingNames: t.typingNames, otherLastReadMessageId: t.otherLastReadMessageId,
+          presence: t.presence, group: t.group } : t));
         if (t.messages.length) merge(t.messages);
-      } catch { /* transient */ }
+      } catch (e) {
+        // Removed from the group (or blocked): the conversation is gone for this person.
+        if (e instanceof ApiError && e.status === 404) setError("You're no longer part of this conversation.");
+      }
     };
     const id = setInterval(tick, POLL_MS);
     return () => clearInterval(id);
   }, [thread, conversationId, lastId, merge]);
 
-  // Mark read when new messages from the other person arrive
-  useEffect(() => {
+  // Mark read when new messages arrive while visible, and when the person comes back to the tab.
+  const markNewest = useCallback(() => {
     const newestTheirs = messages.filter((m) => !m.mine && !m.pending).at(-1)?.id ?? 0;
     if (newestTheirs > lastRead.current && document.visibilityState === "visible") {
       lastRead.current = newestTheirs;
@@ -77,6 +91,12 @@ export function ThreadView({ params }: { params: Promise<{ conversationId: strin
         .then(() => { qc.invalidateQueries({ queryKey: ["unread"] }); qc.invalidateQueries({ queryKey: ["conversations"] }); }).catch(() => {});
     }
   }, [messages, conversationId, qc]);
+  useEffect(() => { markNewest(); }, [markNewest]);
+  useEffect(() => {
+    const onVis = () => markNewest();
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [markNewest]);
 
   useLayoutEffect(() => {
     const el = scroller.current;
@@ -135,21 +155,38 @@ export function ThreadView({ params }: { params: Promise<{ conversationId: strin
   }
 
   const fmt = (iso: string) => new Intl.DateTimeFormat("en-IN", { hour: "numeric", minute: "2-digit" }).format(new Date(iso));
+  const status = thread && !isGroup ? presenceLabel(thread.presence) : null;
+  const typingText = isGroup && thread?.typingNames.length ? `${thread.typingNames.join(", ")} ${thread.typingNames.length > 1 ? "are" : "is"} typing…` : "typing…";
 
   return (
     <main className="ambient flex h-dvh flex-col">
       <header className="flex items-center gap-3 border-b border-line bg-bg/85 px-3 py-2.5 pt-[max(env(safe-area-inset-top),0.625rem)] backdrop-blur-xl">
         <Link href="/app/messages" className="rounded-xl p-2 text-text-2 hover:bg-white/5 hover:text-text" aria-label="Back"><ArrowLeft className="size-5" /></Link>
-        {thread ? (
+        {thread && isGroup && thread.group ? (
+          <button type="button" onClick={() => setInfoOpen(true)} className="flex min-w-0 flex-1 items-center gap-3 text-left" aria-label="Group info">
+            <GroupAvatar name={thread.group.name} photoUrl={thread.group.photoUrl} size={40} />
+            <div className="min-w-0">
+              <p className="truncate font-medium">{thread.group.name}</p>
+              <p className="truncate text-xs text-text-2">{thread.otherTyping ? <span className="text-accent-light">{typingText}</span>
+                : thread.group.members.filter((m) => !m.isMe).map((m) => m.displayName.split(" ")[0]).slice(0, 4).join(", ") + (thread.group.memberCount > 5 ? "…" : "") || `${thread.group.memberCount} members`}</p>
+            </div>
+          </button>
+        ) : thread?.other ? (
           <Link href={`/app/people/${thread.other.profileId}`} className="flex min-w-0 flex-1 items-center gap-3">
-            <Avatar name={thread.other.displayName} src={thread.other.thumbnailUrl} size={40} />
+            <span className="relative">
+              <Avatar name={thread.other.displayName} src={thread.other.thumbnailUrl} size={40} />
+              {thread.presence?.active && <span className="absolute right-0 bottom-0 size-3 rounded-full bg-success ring-2 ring-bg" aria-hidden />}
+            </span>
             <div className="min-w-0">
               <p className="truncate font-medium">{thread.other.displayName}</p>
-              <p className="truncate text-xs text-text-2">{thread.otherTyping ? <span className="text-accent-light">typing…</span> : `Met at ${thread.conversation.originEvent.name}`}</p>
+              <p className="truncate text-xs text-text-2">{thread.otherTyping ? <span className="text-accent-light">typing…</span>
+                : status ? <span className={thread.presence?.active ? "text-success" : undefined}>{status}</span> : `Met at ${thread.conversation.originEvent?.name ?? "an event"}`}</p>
             </div>
           </Link>
         ) : <div className="flex-1"><Logo className="text-base" /></div>}
-        {thread && <button onClick={() => setReportOpen(true)} className="rounded-xl p-2 text-text-2 hover:bg-white/5 hover:text-text" aria-label="Report"><Flag className="size-4" /></button>}
+        {thread && (isGroup
+          ? <button onClick={() => setInfoOpen(true)} className="rounded-xl p-2 text-text-2 hover:bg-white/5 hover:text-text" aria-label="Group info"><Info className="size-5" /></button>
+          : <button onClick={() => setReportOpen(true)} className="rounded-xl p-2 text-text-2 hover:bg-white/5 hover:text-text" aria-label="Report"><Flag className="size-4" /></button>)}
       </header>
 
       <div ref={scroller} className="flex-1 overflow-y-auto px-3 py-4" aria-live="polite"
@@ -159,26 +196,40 @@ export function ThreadView({ params }: { params: Promise<{ conversationId: strin
           {hasMore && <div className="pb-2 text-center"><button onClick={loadOlder} className="text-sm text-accent-light" disabled={loadingOlder}>{loadingOlder ? "Loading…" : "Load earlier messages"}</button></div>}
           {thread && messages.length === 0 && <p className="py-16 text-center text-sm text-text-2">You&apos;re connected! Say hello 👋</p>}
           <AnimatePresence initial={false}>
-            {messages.map((m) => {
+            {messages.map((m, i) => {
+              if (m.kind === "system") {
+                return (
+                  <motion.div key={m.clientMessageId} initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-center py-1.5">
+                    <p className="rounded-full bg-white/[0.06] px-3 py-1 text-center text-xs text-text-2">{m.body} · {fmt(m.createdAt)}</p>
+                  </motion.div>
+                );
+              }
               const failed = (m as ChatMessage & { failed?: boolean }).failed;
               const read = m.mine && !m.pending && thread && m.id <= thread.otherLastReadMessageId;
+              const prev = messages[i - 1];
+              const showSender = isGroup && !m.mine && m.sender && (prev?.kind === "system" || prev?.sender?.profileId !== m.sender.profileId);
               return (
-                <motion.div key={m.clientMessageId} initial={{ opacity: 0, y: 8, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} className={cn("flex", m.mine ? "justify-end" : "justify-start")}>
-                  <Bubble failed={!!failed} onRetry={() => send(m)}
-                    className={cn("max-w-[80%] rounded-2xl px-3.5 py-2 text-left text-[15px] whitespace-pre-wrap break-words",
-                      m.mine ? "rounded-br-md bg-grad-primary text-white" : "rounded-bl-md bg-card-2", m.removed && "italic opacity-60", failed && "ring-2 ring-error")}>
-                    {m.body}
-                    <span className={cn("mt-0.5 flex items-center justify-end gap-1 text-[10px]", m.mine ? "text-white/70" : "text-text-2")}>
-                      {failed ? "Not sent · tap to retry" : m.pending ? "Sending…" : fmt(m.createdAt)}
-                      {m.mine && !m.pending && !failed && (read ? <CheckCheck className="size-3" aria-label="Read" /> : <Check className="size-3" aria-label="Sent" />)}
-                    </span>
-                  </Bubble>
+                <motion.div key={m.clientMessageId} initial={{ opacity: 0, y: 8, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }}
+                  className={cn("flex items-end gap-2", m.mine ? "justify-end" : "justify-start", showSender && "pt-2")}>
+                  {isGroup && !m.mine && (showSender ? <Avatar name={m.sender!.displayName} src={m.sender!.thumbnailUrl} size={28} /> : <span className="w-7 shrink-0" />)}
+                  <div className={cn("flex max-w-[80%] flex-col", m.mine ? "items-end" : "items-start")}>
+                    {showSender && <p className="mb-0.5 px-1 text-xs font-medium text-accent-light">{m.sender!.displayName}</p>}
+                    <Bubble failed={!!failed} onRetry={() => send(m)}
+                      className={cn("rounded-2xl px-3.5 py-2 text-left text-[15px] whitespace-pre-wrap break-words",
+                        m.mine ? "rounded-br-md bg-grad-primary text-white" : "rounded-bl-md bg-card-2", m.removed && "italic opacity-60", failed && "ring-2 ring-error")}>
+                      {m.body}
+                      <span className={cn("mt-0.5 flex items-center justify-end gap-1 text-[10px]", m.mine ? "text-white/70" : "text-text-2")}>
+                        {failed ? "Not sent · tap to retry" : m.pending ? "Sending…" : fmt(m.createdAt)}
+                        {m.mine && !m.pending && !failed && (read ? <CheckCheck className="size-3" aria-label={isGroup ? "Read by everyone" : "Read"} /> : <Check className="size-3" aria-label="Sent" />)}
+                      </span>
+                    </Bubble>
+                  </div>
                 </motion.div>
               );
             })}
           </AnimatePresence>
           {thread?.otherTyping && (
-            <div className="flex"><div className="flex gap-1 rounded-2xl rounded-bl-md bg-card-2 px-4 py-3" aria-label="typing">
+            <div className="flex"><div className="flex gap-1 rounded-2xl rounded-bl-md bg-card-2 px-4 py-3" aria-label={typingText}>
               {[0, 1, 2].map((i) => <motion.span key={i} className="size-1.5 rounded-full bg-text-2" animate={{ y: [0, -4, 0] }} transition={{ repeat: Infinity, duration: 0.9, delay: i * 0.15 }} />)}
             </div></div>
           )}
@@ -190,7 +241,7 @@ export function ThreadView({ params }: { params: Promise<{ conversationId: strin
           <p className="py-2 text-center text-sm text-text-2">You can&apos;t send messages in this conversation anymore.</p>
         ) : (
           <form className="mx-auto flex max-w-2xl items-end gap-2" onSubmit={(e) => { e.preventDefault(); void send(); }}>
-            <textarea value={text} onChange={(e) => onType(e.target.value)} rows={1} maxLength={4000} placeholder="Message" aria-label="Message"
+            <textarea value={text} onChange={(e) => onType(e.target.value)} rows={1} maxLength={4000} placeholder={isGroup ? `Message ${thread?.group?.name ?? "the group"}` : "Message"} aria-label="Message"
               onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(); } }}
               className="max-h-36 min-h-11 flex-1 resize-none rounded-2xl border border-line-strong bg-bg-2 px-4 py-2.5 text-[15px] focus:border-accent focus:outline-none" />
             <button type="submit" disabled={!text.trim() || !thread} aria-label="Send"
@@ -198,8 +249,10 @@ export function ThreadView({ params }: { params: Promise<{ conversationId: strin
           </form>
         )}
       </footer>
-      {thread && <ReportDialog open={reportOpen} onClose={() => setReportOpen(false)} profileId={thread.other.profileId} name={thread.other.displayName}
+      {thread?.other && <ReportDialog open={reportOpen} onClose={() => setReportOpen(false)} profileId={thread.other.profileId} name={thread.other.displayName}
         messageId={messages.filter((m) => !m.mine && !m.pending).at(-1)?.id} />}
+      {thread && isGroup && thread.group && <GroupInfoDialog open={infoOpen} onClose={() => setInfoOpen(false)} groupId={conversationId} thread={thread}
+        onChanged={() => { void load(); qc.invalidateQueries({ queryKey: ["conversations"] }); }} />}
     </main>
   );
 }

@@ -241,7 +241,7 @@ export async function ownProfile(db: Executor, attendeeId: string) {
     photo: p.photoUrl ? { url: p.photoUrl, thumbnailUrl: p.thumbUrl ?? p.photoUrl } : null,
     interests: tags.interests.get(p.id) ?? [], skills: tags.skills.get(p.id) ?? [], lookingForSkills: tags.lookingFor.get(p.id) ?? [],
     socialLinks: ls.map((l) => ({ id: l.id, platform: l.platform, url: l.url, visibility: l.visibility })),
-    privacy: { isPublic: p.isPublic, anonymousVisibilityConsentedAt: p.anonymousVisibilityConsentedAt, companyVisibility: p.companyVisibility, locationVisibility: p.locationVisibility },
+    privacy: { isPublic: p.isPublic, anonymousVisibilityConsentedAt: p.anonymousVisibilityConsentedAt, companyVisibility: p.companyVisibility, locationVisibility: p.locationVisibility, showActivityStatus: p.showActivityStatus },
     usernameChangeAvailableAt: p.usernameChangedAt ? new Date(p.usernameChangedAt.getTime() + USERNAME_CHANGE_COOLDOWN_MS) : null,
     createdAt: p.createdAt,
   };
@@ -341,7 +341,7 @@ export async function replaceSocialLinks(ctx: Ctx) {
 /** Anonymous visibility can be turned off anytime; turning it on requires explicit consent (D-08). */
 export async function updatePrivacy(ctx: Ctx) {
   const me = await requireAttendee(ctx);
-  const b = await ctx.json<{ isPublic?: boolean; anonymousVisibilityConsent?: boolean; companyVisibility?: string; locationVisibility?: string }>();
+  const b = await ctx.json<{ isPublic?: boolean; anonymousVisibilityConsent?: boolean; companyVisibility?: string; locationVisibility?: string; showActivityStatus?: boolean }>();
   const errors = new FieldErrors();
   if (b.companyVisibility !== undefined && !VIS.includes(b.companyVisibility)) errors.add("companyVisibility", "Choose public, members or connections.");
   if (b.locationVisibility !== undefined && !VIS.includes(b.locationVisibility)) errors.add("locationVisibility", "Choose public, members or connections.");
@@ -358,6 +358,7 @@ export async function updatePrivacy(ctx: Ctx) {
   }
   if (b.companyVisibility) patch.companyVisibility = b.companyVisibility;
   if (b.locationVisibility) patch.locationVisibility = b.locationVisibility;
+  if (typeof b.showActivityStatus === "boolean") patch.showActivityStatus = b.showActivityStatus;
   await ctx.db.update(userProfiles).set(patch).where(eq(userProfiles.id, p.id));
   return (await ownProfile(ctx.db, me.attendeeId)).privacy;
 }

@@ -38,6 +38,17 @@ export async function effectiveEntitlements(db: Executor, subject: { attendeeId?
 export async function hasFeature(db: Executor, attendeeId: string, key: string) {
   return (await effectiveEntitlements(db, { attendeeId })).features.some((f) => f.featureKey === key && f.enabled);
 }
+/** Attendees (of `ids`) with an active Premium profile badge — one query for a whole Discover page. */
+export async function premiumBadgeSet(db: Executor, ids: string[]): Promise<Set<string>> {
+  const uniq = [...new Set(ids)];
+  if (!uniq.length) return new Set();
+  const now = new Date();
+  const rows = await db.selectDistinct({ id: userEntitlements.attendeeId }).from(userEntitlements)
+    .where(and(inArray(userEntitlements.attendeeId, uniq), eq(userEntitlements.featureKey, "attendee.profile.badge"), eq(userEntitlements.enabled, true),
+      sql`${userEntitlements.validFrom} <= ${now}`, sql`(${userEntitlements.validUntil} IS NULL OR ${userEntitlements.validUntil} > ${now})`));
+  return new Set(rows.map((r) => r.id));
+}
+
 export async function entitlementLimit(db: Executor, attendeeId: string, key: string): Promise<number | null> {
   return (await effectiveEntitlements(db, { attendeeId })).features.find((f) => f.featureKey === key)?.limit ?? null;
 }

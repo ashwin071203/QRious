@@ -36,6 +36,9 @@ async function main() {
 
     await c.query(`DELETE FROM conversations WHERE origin_event_id IN (SELECT id FROM e2e_events)`);
     await c.query(`DELETE FROM connections WHERE origin_event_id IN (SELECT id FROM e2e_events)`);
+    // Groups whose members are all test attendees (groups have no origin event).
+    await c.query(`DELETE FROM conversations cv WHERE cv.kind = 'group' AND EXISTS (SELECT 1 FROM conversation_members m WHERE m.conversation_id = cv.id)
+      AND NOT EXISTS (SELECT 1 FROM conversation_members m WHERE m.conversation_id = cv.id AND m.attendee_id NOT IN (SELECT id FROM e2e_attendees))`);
     await c.query(`DELETE FROM interests WHERE created_by_attendee_id IN (SELECT id FROM e2e_attendees)`);
     await c.query(`DELETE FROM skills WHERE created_by_attendee_id IN (SELECT id FROM e2e_attendees)`);
     await c.query(`DELETE FROM subscription_invoices WHERE payment_id IN (SELECT id FROM payments WHERE attendee_id IN (SELECT id FROM e2e_attendees))`);

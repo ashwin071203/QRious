@@ -49,7 +49,7 @@ export async function maybeAttendee(ctx: Ctx): Promise<AttendeeAuth | null> {
     const hash = sha256(token);
     const now = new Date();
     const db = ctx.db;
-    const rows = await db.select({ s: attendeeSessions, status: attendees.status, profileId: userProfiles.id })
+    const rows = await db.select({ s: attendeeSessions, status: attendees.status, profileId: userProfiles.id, lastActiveAt: attendees.lastActiveAt })
       .from(attendeeSessions)
       .innerJoin(attendees, eq(attendees.id, attendeeSessions.attendeeId))
       .leftJoin(userProfiles, eq(userProfiles.attendeeId, attendees.id))
@@ -93,6 +93,8 @@ export async function maybeAttendee(ctx: Ctx): Promise<AttendeeAuth | null> {
         if (fromCookie) writeAttendeeCookie(ctx, newTok ?? token, patch.expiresAt!);
       }
     }
+    if (!patch.lastSeenAt && (!row.lastActiveAt || now.getTime() - row.lastActiveAt.getTime() >= 60_000))
+      await db.update(attendees).set({ lastActiveAt: now }).where(eq(attendees.id, s.attendeeId));
     return { attendeeId: s.attendeeId, sessionId: s.id, profileId: row.profileId, status: row.status };
   });
 }

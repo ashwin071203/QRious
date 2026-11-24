@@ -61,7 +61,7 @@ export function useEventContext(eventId?: string) {
 
 function Badge({ n }: { n?: number }) {
   if (!n) return null;
-  return <span className="absolute -top-1 -right-2 min-w-4 rounded-full bg-pink px-1 text-center text-[10px] leading-4 font-bold text-bg">{n > 99 ? "99+" : n}</span>;
+  return <span aria-hidden className="absolute -top-1 -right-2 min-w-4 rounded-full bg-pink px-1 text-center text-[10px] leading-4 font-bold text-bg">{n > 99 ? "99+" : n}</span>;
 }
 
 /** Main attendee navigation (PRD §5): Home · Discover · Event Pulse · Messages · Profile. */
@@ -78,11 +78,11 @@ export function AttendeeNav({ eventId }: { eventId?: string }) {
     { href: "/app/profile", label: "Profile", icon: <UserRound className="size-5" />, active: pathname.startsWith("/app/profile") || pathname.startsWith("/app/settings") },
   ];
   return (
-    <nav aria-label="Main" className="glass fixed inset-x-0 bottom-0 z-40 border-x-0 border-b-0 pb-[env(safe-area-inset-bottom)] sm:hidden">
+    <nav aria-label="Main" className="glass fixed inset-x-0 bottom-0 z-40 border-x-0 border-b-0 pb-[env(safe-area-inset-bottom)] md:hidden">
       <ul className="mx-auto flex max-w-lg">
         {items.map((item) => (
           <li key={item.label} className="flex-1">
-            <Link href={item.href} aria-current={item.active ? "page" : undefined}
+            <Link href={item.href} aria-current={item.active ? "page" : undefined} aria-label={item.badge ? `${item.label}, ${item.badge} unread` : item.label}
               className={cn("relative flex flex-col items-center gap-1 py-2.5 text-[11px] font-medium", item.active ? "text-text" : "text-text-2")}>
               {item.active && <motion.span layoutId="nav-pill" className="absolute -top-px h-0.5 w-8 rounded-full bg-grad-primary" />}
               <span className="relative">{item.icon}<Badge n={item.badge} /></span>
@@ -116,7 +116,7 @@ export function TopBar({ eventId, title }: { eventId?: string; title?: string })
         {title && <span className="min-w-0 truncate text-sm text-text-2 md:hidden">{title}</span>}
         <nav className="ml-3 hidden items-center gap-0.5 md:flex" aria-label="Main">
           {links.map((l) => (
-            <Link key={l.label} href={l.href}
+            <Link key={l.label} href={l.href} aria-label={l.badge ? `${l.label}, ${l.badge} ${l.label === "Connections" ? "pending" : "unread"}` : l.label}
               className={cn("relative rounded-xl px-3 py-1.5 text-sm transition-colors", pathname === l.href || (l.href !== "/app/events" && pathname.startsWith(l.href)) ? "bg-white/8 text-text" : "text-text-2 hover:text-text")}>
               {l.label}<Badge n={l.badge} />
             </Link>
@@ -139,7 +139,7 @@ export function TopBar({ eventId, title }: { eventId?: string; title?: string })
 }
 
 export function PageContainer({ children, className }: { children: ReactNode; className?: string }) {
-  return <main className={cn("mx-auto max-w-5xl px-4 pt-6 pb-28 sm:pb-12", className)}>{children}</main>;
+  return <main className={cn("mx-auto max-w-5xl px-4 pt-6 pb-28 md:pb-12", className)}>{children}</main>;
 }
 
 /** Standard attendee page frame. */

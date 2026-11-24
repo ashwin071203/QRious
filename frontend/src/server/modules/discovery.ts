@@ -8,7 +8,7 @@ import { requireAttendee } from "./identity";
 import { isNetworkingOpen, loadEvent, resolveQr, type EventFull } from "./events-core";
 import { profileTags, type Tag } from "./profiles";
 import { requireParticipant } from "./participation";
-import { hasFeature } from "./billing";
+import { hasFeature, premiumBadgeSet } from "./billing";
 
 const { userProfiles, socialLinks, savedProfiles, eventParticipants, connections } = schema;
 
@@ -185,7 +185,9 @@ export async function memberPeople(ctx: Ctx) {
   const connected = await connectedSet(ctx.db, me.attendeeId, rows.map((r) => r.attendee_id));
   const items = await project(ctx.db, rows.slice(0, PAGE), (r) => (connected.has(r.attendee_id) ? "connection" : "member"), me);
   const states = await Promise.all(rows.slice(0, PAGE).map((r) => connectionState(ctx.db, me.attendeeId, r.attendee_id)));
-  return { items: items.map((it, i) => ({ ...it, connectionState: states[i]!.state, connectionId: states[i]!.connectionId })), nextCursor: rows.length > PAGE ? String(offset + PAGE) : null, advancedFilters: advanced };
+  // Premium highlight badge, only where the organizer allows it (premiumHighlightingEnabled). Never changes who is visible.
+  const badges = event.settings.premiumHighlightingEnabled ? await premiumBadgeSet(ctx.db, rows.slice(0, PAGE).map((r) => r.attendee_id)) : new Set<string>();
+  return { items: items.map((it, i) => ({ ...it, premium: badges.has(rows[i]!.attendee_id), connectionState: states[i]!.state, connectionId: states[i]!.connectionId })), nextCursor: rows.length > PAGE ? String(offset + PAGE) : null, advancedFilters: advanced };
 }
 
 async function connectedSet(db: Executor, viewer: string, others: string[]) {
@@ -208,7 +210,8 @@ export async function memberPerson(ctx: Ctx) {
     .where(and(eq(eventParticipants.eventId, event.id), eq(eventParticipants.attendeeId, row.attendee_id))).limit(1))[0]?.p;
   if (paused && state.state !== "connected" && row.attendee_id !== me.attendeeId) throw notFound("This profile isn't available.");
   const [p] = await project(ctx.db, [row], () => (state.state === "connected" ? "connection" : "member"), me);
-  return { ...p, connectionState: row.attendee_id === me.attendeeId ? "self" : state.state, connectionId: state.connectionId };
+  const premium = event.settings.premiumHighlightingEnabled && (await premiumBadgeSet(ctx.db, [row.attendee_id])).has(row.attendee_id);
+  return { ...p, premium, connectionState: row.attendee_id === me.attendeeId ? "self" : state.state, connectionId: state.connectionId };
 }
 
 /** Connected people's profile outside an event context (e.g. from Messages/Connections). */
@@ -223,7 +226,7 @@ export async function connectionProfile(ctx: Ctx) {
     FROM user_profiles up JOIN attendees a ON a.id = up.attendee_id AND a.status = 'active' WHERE up.id = ${ctx.params.profileId}`)).rows;
   if (!rows.length) throw notFound("This profile isn't available.");
   const [p] = await project(ctx.db, rows, () => "connection", me);
-  return { ...p, connectionState: "connected", connectionId: state.connectionId };
+  return { ...p, premium: (await premiumBadgeSet(ctx.db, [target.attendeeId])).has(target.attendeeId), connectionState: "connected", connectionId: state.connectionId };
 }
 
 // ---------- Saved profiles ----------

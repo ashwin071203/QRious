@@ -394,6 +394,11 @@ export async function runMaintenance(db: Executor) {
       await tx.execute(sql`UPDATE events e SET participant_count = (SELECT count(*) FROM event_participants ep WHERE ep.event_id = e.id AND ep.status = 'active')
         WHERE e.id IN (SELECT event_id FROM event_participants WHERE attendee_id = ${d.attendeeId})`);
       await tx.execute(sql`UPDATE connections SET status = 'removed', removed_at = now() WHERE status IN ('pending','accepted') AND (requester_attendee_id = ${d.attendeeId} OR addressee_attendee_id = ${d.attendeeId})`);
+      await tx.execute(sql`DELETE FROM conversation_members cm USING conversations cv WHERE cv.id = cm.conversation_id AND cv.kind = 'group' AND cm.attendee_id = ${d.attendeeId}`);
+      await tx.execute(sql`DELETE FROM conversations cv WHERE cv.kind = 'group' AND NOT EXISTS (SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = cv.id)`);
+      await tx.execute(sql`UPDATE conversation_members cm SET role = 'admin' FROM conversations cv WHERE cv.id = cm.conversation_id AND cv.kind = 'group'
+        AND NOT EXISTS (SELECT 1 FROM conversation_members x WHERE x.conversation_id = cv.id AND x.role = 'admin')
+        AND cm.attendee_id = (SELECT x.attendee_id FROM conversation_members x WHERE x.conversation_id = cv.id ORDER BY x.created_at LIMIT 1)`);
       await tx.update(attendees).set({ status: "deleted", deletedAt: new Date() }).where(eq(attendees.id, d.attendeeId));
       await revokeAllSessions(tx, d.attendeeId, "deletion");
       await tx.update(accountDeletionRequests).set({ completedAt: new Date() }).where(eq(accountDeletionRequests.id, d.id));

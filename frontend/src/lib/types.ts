@@ -27,7 +27,7 @@ export interface OwnProfile {
   id: string; displayName: string; username: string; bio: string | null; profession: string | null; company: string | null; location: string | null;
   lookingForText: string | null; canOfferText: string | null; photo: Photo | null; interests: Tag[]; skills: Tag[]; lookingForSkills: Tag[];
   socialLinks: SocialLink[];
-  privacy: { isPublic: boolean; anonymousVisibilityConsentedAt: string | null; companyVisibility: Visibility; locationVisibility: Visibility };
+  privacy: { isPublic: boolean; anonymousVisibilityConsentedAt: string | null; companyVisibility: Visibility; locationVisibility: Visibility; showActivityStatus: boolean };
   usernameChangeAvailableAt: string | null; createdAt: string;
 }
 
@@ -41,6 +41,8 @@ export interface Intention { id: string; slug: string; label: string; group: str
 export interface MyEvent { event: PublicEvent; participation: Participation; intentions?: Intention[] }
 
 export interface PersonCard {
+  /** Premium highlight badge (only where the event allows it). */
+  premium?: boolean;
   id: string; displayName: string; username: string; bio: string | null; profession: string | null; photo: Photo | null;
   interests: { id: string; name: string }[]; skills: { id: string; name: string }[]; company: string | null; location: string | null;
   socialLinks: { platform: string; url: string }[]; audience: "public" | "member" | "connection";
@@ -67,22 +69,42 @@ export interface ConnectionItem {
   originEvent: { id: string; name: string }; profile: { id: string; displayName: string; username: string; profession: string | null; photo: Photo | null };
 }
 
+/** Activity status, only present when both people share it and are connected. */
+export interface Presence { active: boolean; lastSeenAt: string | null }
 export interface ConversationItem {
-  id: string; lastMessageAt: string | null; unreadCount: number; canSend: boolean; lastMessage: { body: string; mine: boolean } | null;
-  originEvent: { id: string; name: string }; other: { profileId: string; displayName: string; username: string; thumbnailUrl: string | null };
+  kind: "direct" | "group";
+  id: string; lastMessageAt: string | null; unreadCount: number; canSend: boolean;
+  lastMessage: { body: string; mine: boolean; senderName: string | null; system: boolean } | null;
+  originEvent: { id: string; name: string } | null;
+  other: { profileId: string; displayName: string; username: string; thumbnailUrl: string | null } | null;
+  presence: Presence | null;
+  group: { name: string; photoUrl: string | null; memberCount: number } | null;
 }
-export interface ChatMessage { id: number; mine: boolean; body: string; removed: boolean; createdAt: string; clientMessageId: string; pending?: boolean }
+export interface ChatMessage {
+  id: number; mine: boolean; body: string; removed: boolean; createdAt: string; clientMessageId: string; pending?: boolean;
+  kind?: "user" | "system"; sender?: { profileId: string; displayName: string; thumbnailUrl: string | null } | null;
+}
+export interface GroupMember {
+  profileId: string | null; displayName: string; username: string | null; thumbnailUrl: string | null; role: "admin" | "member"; isMe: boolean; connected: boolean;
+  presence: Presence | null; joinedAt: string;
+}
 export interface Thread {
-  conversation: { id: string; originEvent: { id: string; name: string } };
-  other: { profileId: string; displayName: string; username: string; thumbnailUrl: string | null };
-  canSend: boolean; otherLastReadMessageId: number; otherTyping: boolean; messages: ChatMessage[]; hasMore: boolean;
+  conversation: { id: string; kind: "direct" | "group"; originEvent: { id: string; name: string } | null };
+  other: { profileId: string; displayName: string; username: string; thumbnailUrl: string | null } | null;
+  presence: Presence | null;
+  group: { name: string; photoUrl: string | null; createdAt: string; myRole: "admin" | "member"; memberCount: number; members: GroupMember[] } | null;
+  canSend: boolean; otherLastReadMessageId: number; otherTyping: boolean; typingNames: string[]; messages: ChatMessage[]; hasMore: boolean;
+}
+export interface NetworkingAnalytics {
+  eventsJoined: number; connections: number; connectionsLast30Days: number; requestsSent: number; requestAcceptanceRate: number | null; requestsReceived: number;
+  conversations: number; messagesSent: number; savedBy: number; connectionsByEvent: { eventId: string; name: string; connections: number }[];
 }
 
 export interface NotificationItem {
   id: string; type: string; payload: { message?: string; intro?: string | null; preview?: string; eventName?: string; kind?: string };
   eventId: string | null; entityId: string | null; createdAt: string; readAt: string | null; actor: { id: string; displayName: string | null; thumbnailUrl: string | null } | null;
 }
-export interface UnreadCounts { notifications: number; requests: number; messages: number }
+export interface UnreadCounts { notifications: number; requests: number; messages: number; conversations: number }
 
 export interface SessionInfo { id: string; device: string; createdAt: string; lastSeenAt: string; expiresAt: string; absoluteExpiresAt: string; isCurrent: boolean }
 export interface UsernameAvailability { available: boolean; normalized: string | null; reason: string | null; suggestions: string[] }

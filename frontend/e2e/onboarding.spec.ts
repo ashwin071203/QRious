@@ -235,3 +235,78 @@ test("Starter: 3 lifetime free events, then upgrade options; premium tools show 
   await shot(page, `organizer-starter-${info.project.name}`);
   await ctx.close();
 });
+
+test("Messaging: group with connections only, unread badges clear on reading, activity status", async ({ browser, baseURL }, info) => {
+  test.setTimeout(180_000);
+  const mobile = info.project.name === "mobile";
+  const view = mobile ? { viewport: { width: 412, height: 915 }, isMobile: true, hasTouch: true } : { viewport: { width: 1280, height: 860 } };
+  const { ctx: orgCtx, code } = await organizerCreatesEvent(browser, view);
+  await orgCtx.close();
+  const headers = { "X-QRious-Client": "web", origin: baseURL!.replace(/\/$/, "") };
+  async function person(name: string) {
+    const ctx = await browser.newContext(view);
+    const r = await ctx.request.post("/api/v1/onboarding/profile", { headers: { ...headers, "idempotency-key": crypto.randomUUID() },
+      data: { qrCode: code, displayName: name, username: `${name.toLowerCase()}${uid()}`.slice(0, 30), interests: [{ name: "Indie" }], skills: [{ name: "Guitar" }], isPublic: false, anonymousVisibilityConsent: false } });
+    expect(r.status()).toBe(201);
+    const body = await r.json();
+    return { ctx, page: await ctx.newPage(), profileId: body.profile.id as string, eventId: body.eventId as string, name };
+  }
+  const [a, b, c, stranger] = await Promise.all([person("Avery"), person("Blake"), person("Casey"), person("Drew")]);
+  const connect = async (x: typeof a, y: typeof a) => {
+    const r = await x.ctx.request.post(`/api/v1/events/${x.eventId}/connections`, { headers, data: { profileId: y.profileId } });
+    expect(r.status()).toBe(201);
+    expect((await y.ctx.request.post(`/api/v1/connections/${(await r.json()).id}/accept`, { headers })).status()).toBe(200);
+  };
+  await connect(a, b);
+  await connect(a, c);
+
+  // Create the group in the UI: only connections are offered (the stranger isn't)
+  await a.page.goto("/app/messages");
+  await a.page.getByRole("button", { name: "New group" }).click();
+  const dialog = a.page.getByRole("dialog", { name: "New group" });
+  await expect(dialog.getByRole("checkbox", { name: /Blake/ })).toBeVisible();
+  await expect(dialog.getByRole("checkbox", { name: /Drew/ })).toHaveCount(0);
+  await dialog.getByLabel("Group name").fill("Jam crew");
+  await dialog.getByRole("checkbox", { name: /Blake/ }).click();
+  await dialog.getByRole("checkbox", { name: /Casey/ }).click();
+  await dialog.getByRole("button", { name: /Create group/ }).click();
+  await expect(a.page).toHaveURL(/\/app\/messages\/[0-9a-f-]+$/);
+  const groupUrl = a.page.url();
+  await expect(a.page.getByText(/created the group “Jam crew”/).first()).toBeVisible();
+  await a.page.getByLabel("Message", { exact: true }).fill("Welcome to the crew!");
+  await a.page.getByRole("button", { name: "Send" }).click();
+  await expect(a.page.getByText("Welcome to the crew!")).toBeVisible();
+
+  // Blake: unread badge on Messages, per-conversation count, cleared after reading
+  await b.page.goto("/app/messages");
+  const row = b.page.getByRole("link", { name: /Jam crew, 1 unread/ });
+  await expect(row).toBeVisible({ timeout: 20_000 });
+  await expect(b.page.getByRole("link", { name: "Messages, 1 unread" }).filter({ visible: true })).toBeVisible();
+  const readDone = b.page.waitForResponse((r) => r.url().includes("/read") && r.request().method() === "POST");
+  await row.click();
+  await expect(b.page.getByText("Welcome to the crew!").first()).toBeVisible();
+  await expect(b.page.getByText("Avery", { exact: true }).first()).toBeVisible(); // sender name in the group
+  expect((await readDone).status()).toBe(204);
+  await b.page.goto("/app/messages");
+  await expect(b.page.getByRole("link", { name: "Jam crew", exact: true })).toBeVisible({ timeout: 20_000 });
+  await expect(b.page.getByRole("link", { name: "Messages", exact: true }).filter({ visible: true })).toBeVisible({ timeout: 20_000 }); // badge cleared
+
+  // Group info: members, roles and activity status of connections; Blake (member) can't manage
+  await b.page.goto(groupUrl);
+  await b.page.getByRole("button", { name: "Group info" }).first().click();
+  const infoDialog = b.page.getByRole("dialog", { name: "Group info" });
+  await expect(infoDialog.getByText("Admin", { exact: true })).toBeVisible();
+  await expect(infoDialog.getByText("Active now")).toBeVisible(); // Avery is a connection and active
+  await expect(infoDialog.getByRole("button", { name: "Add members" })).toHaveCount(0);
+  await infoDialog.getByRole("button", { name: "Close" }).click();
+
+  // Direct chat header shows activity status
+  const dmR = await a.ctx.request.post("/api/v1/conversations", { headers, data: { profileId: b.profileId, eventId: a.eventId } });
+  await b.page.goto(`/app/messages/${(await dmR.json()).id}`);
+  await expect(b.page.getByText("Active now").first()).toBeVisible();
+
+  // The stranger can't open the group
+  await stranger.page.goto(groupUrl);
+  await expect(stranger.page.getByText(/no longer part of|not found/i)).toBeVisible();
+  for (const p of [a, b, c, stranger]) await p.ctx.close();
+});

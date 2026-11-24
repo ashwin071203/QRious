@@ -5,7 +5,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { motion } from "motion/react";
-import { Bookmark, BookmarkCheck, Briefcase, Building2, Check, Clock, Flag, Handshake, Link2, MapPin, MessageCircle, ShieldBan, Sparkles, UserCheck, UserPlus } from "lucide-react";
+import { BadgeCheck, Bookmark, BookmarkCheck, Briefcase, Building2, Check, Clock, Flag, Handshake, Link2, MapPin, MessageCircle, ShieldBan, Sparkles, UserCheck, UserPlus } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
 import type { PersonCard } from "@/lib/types";
 import { availabilityLabel, cn } from "@/lib/format";
@@ -37,6 +37,11 @@ export function AvailabilityPill({ status, className }: { status?: string | null
 }
 
 /** Photo-based profile card with shared-interest and complementary-skill highlights (PRD §9.6). */
+/** Premium highlight badge (PRD §19.2) — shown only where the event allows Premium highlighting. */
+export function PremiumBadge() {
+  return <BadgeCheck className="size-[1.1em] shrink-0 text-pink" aria-label="Premium member"><title>Premium member</title></BadgeCheck>;
+}
+
 export function PersonCardView({ person, href, index = 0 }: { person: PersonCard; href: string; index?: number }) {
   return (
     <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(index, 12) * 0.03 }}>
@@ -44,7 +49,7 @@ export function PersonCardView({ person, href, index = 0 }: { person: PersonCard
         <div className="flex items-start gap-3">
           <Avatar name={person.displayName} src={person.photo?.thumbnailUrl} size={56} />
           <div className="min-w-0 flex-1">
-            <p className="truncate font-display font-semibold">{person.displayName}</p>
+            <p className="flex items-center gap-1.5 truncate font-display font-semibold"><span className="truncate">{person.displayName}</span>{person.premium && <PremiumBadge />}</p>
             <p className="truncate text-sm text-text-2">@{person.username}</p>
             {person.profession && <p className="mt-0.5 truncate text-sm text-text-2">{person.profession}</p>}
           </div>
@@ -74,7 +79,7 @@ export function ProfileDetail({ person, actions }: { person: PersonCard; actions
         <div className="h-24 bg-[radial-gradient(120%_120%_at_0%_0%,#8b5cf6_0%,#2a1e42_55%,#19112b_100%)]" />
         <div className="-mt-12 px-5 pb-5">
           <Avatar name={person.displayName} src={person.photo?.url} size={96} className="ring-4 ring-card" />
-          <h1 className="mt-3 font-display text-2xl font-bold">{person.displayName}</h1>
+          <h1 className="mt-3 flex items-center gap-2 font-display text-2xl font-bold">{person.displayName}{person.premium && <PremiumBadge />}</h1>
           <p className="text-text-2">@{person.username}</p>
           {person.availability && <AvailabilityPill status={person.availability} className="mt-2" />}
           {person.bio && <p className="mt-3 text-[15px] leading-relaxed whitespace-pre-line">{person.bio}</p>}

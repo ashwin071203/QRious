@@ -187,6 +187,8 @@ export const userProfiles = pgTable("user_profiles", {
   isPublic: boolean("is_public").notNull().default(true),
   anonymousVisibilityConsentedAt: ts("anonymous_visibility_consented_at"),
   companyVisibility: text("company_visibility").notNull().default("members"),
+  /** Activity status (Active now / Last seen) shown to accepted connections. Reciprocal: hiding yours hides others' from you. */
+  showActivityStatus: boolean("show_activity_status").notNull().default(true),
   locationVisibility: text("location_visibility").notNull().default("members"),
   showSavedMe: boolean("show_saved_me").notNull().default(false),
   createdAt: createdAt(),
@@ -497,18 +499,28 @@ export const connectionHistory = pgTable("connection_history", {
   createdAt: createdAt(),
 });
 
+export const CONVERSATION_KIND = ["direct", "group"] as const;
 export const conversations = pgTable("conversations", {
   id: uuid("id").primaryKey().defaultRandom(),
+  /** direct: exactly two attendees (pair columns set). group: named, admin-managed, members added from accepted connections. */
+  kind: text("kind").notNull().default("direct"),
   connectionId: uuid("connection_id").references(() => connections.id, { onDelete: "set null" }),
-  attendeeLowId: uuid("attendee_low_id").notNull(),
-  attendeeHighId: uuid("attendee_high_id").notNull(),
-  originEventId: uuid("origin_event_id").notNull().references(() => events.id, { onDelete: "restrict" }),
+  attendeeLowId: uuid("attendee_low_id"),
+  attendeeHighId: uuid("attendee_high_id"),
+  originEventId: uuid("origin_event_id").references(() => events.id, { onDelete: "restrict" }),
+  name: text("name"),
+  photoUrl: text("photo_url"),
+  photoKey: text("photo_key"),
+  createdBy: uuid("created_by").references(() => attendees.id, { onDelete: "set null" }),
   lastMessageId: integer("last_message_id"),
   lastMessageAt: ts("last_message_at"),
   createdAt: createdAt(),
 }, (t) => [
   uniqueIndex("ux_conversations_pair").on(t.attendeeLowId, t.attendeeHighId),
   check("ck_conversations_pair_order", sql`attendee_low_id < attendee_high_id`),
+  check("ck_conversations_kind", inList("kind", CONVERSATION_KIND)),
+  check("ck_conversations_shape", sql`(kind = 'direct' AND attendee_low_id IS NOT NULL AND attendee_high_id IS NOT NULL AND origin_event_id IS NOT NULL)
+    OR (kind = 'group' AND attendee_low_id IS NULL AND attendee_high_id IS NULL AND name IS NOT NULL)`),
 ]);
 
 export const conversationMembers = pgTable("conversation_members", {
@@ -517,14 +529,21 @@ export const conversationMembers = pgTable("conversation_members", {
   lastReadMessageId: integer("last_read_message_id").notNull().default(0),
   lastReadAt: ts("last_read_at"),
   typingAt: ts("typing_at"),
+  /** Group role. Direct conversations use "member" for both people. */
+  role: text("role").notNull().default("member"),
+  /** Group members only see messages after they joined (ids greater than this). */
+  joinedAfterMessageId: integer("joined_after_message_id").notNull().default(0),
   joinedAt: createdAt(),
-}, (t) => [primaryKey({ columns: [t.conversationId, t.attendeeId] }), index("ix_conversation_members_attendee").on(t.attendeeId)]);
+}, (t) => [primaryKey({ columns: [t.conversationId, t.attendeeId] }), index("ix_conversation_members_attendee").on(t.attendeeId),
+  check("ck_conversation_members_role", sql`role IN ('admin','member')`)]);
 
 export const messages = pgTable("messages", {
   id: bigserial("id", { mode: "number" }).primaryKey(),
   conversationId: uuid("conversation_id").notNull().references(() => conversations.id, { onDelete: "cascade" }),
   senderAttendeeId: uuid("sender_attendee_id").notNull().references(() => attendees.id, { onDelete: "cascade" }),
   clientMessageId: uuid("client_message_id").notNull(),
+  /** user: written by a person. system: group activity (created, member added/removed/left, renamed). */
+  kind: text("kind").notNull().default("user"),
   body: text("body").notNull(),
   createdAt: createdAt(),
   deletedAt: ts("deleted_at"),
@@ -532,6 +551,7 @@ export const messages = pgTable("messages", {
   uniqueIndex("ux_messages_client_id").on(t.conversationId, t.clientMessageId),
   index("ix_messages_conversation").on(t.conversationId, t.id),
   check("ck_messages_body", sql`length(btrim(body)) BETWEEN 1 AND 4000`),
+  check("ck_messages_kind", sql`kind IN ('user','system')`),
 ]);
 
 // ---------- Notifications ----------

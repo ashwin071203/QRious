@@ -88,3 +88,13 @@ export function isoToZonedInput(iso: string, timeZone: string): string {
 }
 
 export const TIME_ZONES = ["Asia/Kolkata", "Asia/Dubai", "Asia/Singapore", "Asia/Tokyo", "Europe/London", "Europe/Berlin", "America/New_York", "America/Los_Angeles", "Australia/Sydney", "UTC"];
+
+/** "Active now" / "Last seen 10 minutes ago" — only ever called with presence the server chose to share. */
+export function presenceLabel(p: { active: boolean; lastSeenAt: string | null } | null | undefined): string | null {
+  if (!p) return null;
+  if (p.active) return "Active now";
+  if (!p.lastSeenAt) return "Offline";
+  const mins = Math.round((Date.now() - new Date(p.lastSeenAt).getTime()) / 60_000);
+  if (mins < 1) return "Last seen just now";
+  return `Last seen ${relativeTime(p.lastSeenAt)}`;
+}

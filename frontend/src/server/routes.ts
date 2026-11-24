@@ -12,6 +12,7 @@ import * as discovery from "./modules/discovery";
 import * as matching from "./modules/matching";
 import * as pulse from "./modules/pulse";
 import * as social from "./modules/social";
+import * as groups from "./modules/groups";
 import * as organizers from "./modules/organizers";
 import * as ev from "./modules/events-admin";
 import * as admin from "./modules/admin";
@@ -112,6 +113,7 @@ const routes: Route[] = [
   R("PUT", "/me/saved-profiles/:profileId", discovery.saveProfile),
   R("DELETE", "/me/saved-profiles/:profileId", discovery.unsaveProfile),
   R("GET", "/me/saved-by", discovery.savedBy),
+  R("GET", "/me/analytics", social.myAnalytics),
 
   // ---------- Connections, messaging, notifications, safety (M09–M12) ----------
   R("POST", "/events/:eventId/connections", social.requestConnection),
@@ -122,6 +124,15 @@ const routes: Route[] = [
   R("DELETE", "/connections/:id", social.removeConnection),
   R("GET", "/conversations", social.listConversations),
   R("POST", "/conversations", social.startConversation),
+  R("POST", "/conversations/groups", groups.createGroup),
+  R("GET", "/conversations/group-candidates", groups.groupCandidates),
+  R("PATCH", "/conversations/:id/group", groups.renameGroup),
+  R("PUT", "/conversations/:id/group/photo", groups.setGroupPhoto),
+  R("DELETE", "/conversations/:id/group/photo", groups.removeGroupPhoto),
+  R("POST", "/conversations/:id/members", groups.addMembers),
+  R("DELETE", "/conversations/:id/members/:profileId", groups.removeMember),
+  R("PUT", "/conversations/:id/members/:profileId/admin", groups.setAdmin),
+  R("POST", "/conversations/:id/leave", groups.leaveGroup),
   R("GET", "/conversations/:id/messages", social.getMessages),
   R("POST", "/conversations/:id/messages", social.sendMessage),
   R("POST", "/conversations/:id/read", social.markRead),

@@ -96,6 +96,16 @@ function PrivacySection({ profile }: { profile: OwnProfile }) {
           onChange={(v) => update({ locationVisibility: v }, "Location visibility updated")} />
       </div>
       <p className="text-xs text-text-2">Social link visibility is set per link when you edit your profile.</p>
+      <Toggle
+        checked={profile.privacy.showActivityStatus}
+        disabled={busy}
+        onChange={(v) => update({ showActivityStatus: v }, v ? "Your connections can see when you're active" : "Your activity status is hidden")}
+        label="Show my activity status"
+        description={profile.privacy.showActivityStatus
+          ? "Your connections see “Active now” or when you were last seen. Only connections, never strangers."
+          : "Hidden. While it's off you also won't see when others are active."}
+      />
+
 
       <AnimatePresence>
         {confirmOpen && (

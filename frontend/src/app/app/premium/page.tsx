@@ -12,6 +12,7 @@ import { useToast } from "@/components/Providers";
 import { api, ApiError } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import { loadRazorpay } from "@/lib/razorpay";
+import { NetworkingAnalyticsCard } from "@/components/NetworkingAnalytics";
 import type { Plan } from "@/lib/types";
 
 const FREE = ["Create your profile", "Join unlimited events", "Discover people", "Basic Smart Matching", "Event Pulse", "Open to Talk", "Connection requests", "Private messaging", "Privacy controls"];
@@ -87,8 +88,11 @@ export default function PremiumPage() {
               {billing.data?.promotion && <p className="mt-1 text-sm text-text-2">Promotional access until {formatDateTime(billing.data.promotion.endsAt)}</p>}
               {billing.data?.subscription?.currentPeriodEnd && <p className="mt-1 text-sm text-text-2">{billing.data.subscription.cancelAtPeriodEnd ? "Ends" : "Renews"} {formatDateTime(billing.data.subscription.currentPeriodEnd)}</p>}
             </div>
-            {billing.data?.subscription?.status === "active" && !billing.data.subscription.cancelAtPeriodEnd && <Button variant="secondary" loading={busy} onClick={cancel}>Cancel subscription</Button>}
+            {["active", "pending"].includes(billing.data?.subscription?.status ?? "") && !billing.data!.subscription!.cancelAtPeriodEnd && <Button variant="secondary" loading={busy} onClick={cancel}>Cancel subscription</Button>}
           </div>
+          {billing.data?.subscription?.status === "pending" && <p className="rounded-2xl border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">Your renewal payment failed. Razorpay will retry automatically — please check your payment method. Premium stays on meanwhile.</p>}
+          {billing.data?.subscription?.status === "halted" && !isPremium && <p className="rounded-2xl border border-error/30 bg-error/10 px-4 py-3 text-sm text-error">Renewal payments failed, so Premium is paused. Your profile, connections and chats are untouched.</p>}
+          {isPremium && <NetworkingAnalyticsCard />}
 
           <div className="flex justify-center"><Tabs value={period} onChange={setPeriod} items={[{ value: "month", label: "Monthly" }, { value: "year", label: "Yearly · save 33%" }]} /></div>
 
