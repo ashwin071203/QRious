@@ -1,6 +1,6 @@
 # QRious
 
-**One event. Many connections.** A QR-based event networking platform: attendees scan the event QR code,
+**QRious is One event. Many connections.** A QR-based event networking platform: attendees scan the event QR code,
 browse public profiles or create a reusable profile, and connect and chat with people at the same event.
 Organizers create events, share one QR code, configure networking and manage participants.
 
