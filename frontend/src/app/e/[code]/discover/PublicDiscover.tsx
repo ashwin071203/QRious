@@ -72,14 +72,14 @@ export function PublicDiscover({ params }: { params: Promise<{ code: string }> }
           {err ? (
             <div className="card"><EmptyState icon={<Compass className="size-7" />} title={err.code === "networking_closed" ? "Networking hasn't opened yet" : err.code === "anonymous_browsing_disabled" ? "Members only" : "Discover isn't available"}
               action={<ButtonLink href={`/e/${code}/join`} icon={<UserPlus className="size-4" />}>Create My Profile</ButtonLink>}>{err.message}</EmptyState></div>
-          ) : list.isLoading ? <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-40" />)}</div>
+          ) : list.isLoading ? <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-40" />)}</div>
           : items.length === 0 ? (
             <div className="card"><EmptyState icon={<Compass className="size-7" />} title={q || interest || skill ? "No one matches" : "No public profiles yet"}
               action={<ButtonLink href={`/e/${code}/join`} icon={<UserPlus className="size-4" />}>Be the first — create your profile</ButtonLink>}>
               {q || interest || skill ? "Try a different search." : "People who choose to be visible will appear here."}</EmptyState></div>
           ) : (
             <>
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {items.map((p, i) => <PersonCardView key={p.id} person={p} index={i} href={`/e/${code}/discover/${p.id}`} />)}
               </div>
               {list.hasNextPage && <div className="mt-6 text-center"><Button variant="secondary" loading={list.isFetchingNextPage} onClick={() => list.fetchNextPage()}>Show more</Button></div>}

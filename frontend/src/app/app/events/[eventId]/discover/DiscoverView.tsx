@@ -57,12 +57,12 @@ export function DiscoverView({ params }: { params: Promise<{ eventId: string }> 
       <PageHeader title="Discover people" subtitle={me ? `At ${me.event.name}` : undefined}
         actions={<ButtonLink href={`/app/events/${eventId}/matches`} variant="secondary" icon={<Wand2 className="size-4" />}>Smart Matches</ButtonLink>} />
 
-      <div className="flex gap-2">
-        <div className="relative flex-1">
+      <div className="flex min-w-0 gap-2">
+        <div className="relative min-w-0 flex-1">
           <Search className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-text-2" />
           <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by name or @username" className="pl-10" aria-label="Search people" />
         </div>
-        <Button variant="secondary" className="h-12" icon={<Filter className="size-4" />} onClick={() => setShowFilters((s) => !s)} aria-expanded={showFilters}>
+        <Button variant="secondary" className="h-12 shrink-0" icon={<Filter className="size-4" />} onClick={() => setShowFilters((s) => !s)} aria-expanded={showFilters}>
           Filters{filterCount ? ` (${filterCount})` : ""}
         </Button>
       </div>
@@ -101,13 +101,13 @@ export function DiscoverView({ params }: { params: Promise<{ eventId: string }> 
         ) : err && err.code === "feature_disabled" ? (
           <div className="card"><EmptyState icon={<Compass className="size-7" />} title="Discover is off">{err.message}</EmptyState></div>
         ) : list.isError ? <ErrorState error={list.error} onRetry={() => list.refetch()} />
-        : list.isLoading ? <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-44" />)}</div>
+        : list.isLoading ? <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-44" />)}</div>
         : items.length === 0 ? (
           <div className="card"><EmptyState icon={<Compass className="size-7" />} title={filterCount || q ? "No one matches those filters" : "No one to show yet"}>
             {filterCount || q ? "Try removing a filter." : "As more people join this event, they'll appear here. Share the event QR with friends!"}</EmptyState></div>
         ) : (
           <>
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {items.map((p, i) => <PersonCardView key={p.id} person={p} index={i} href={`/app/events/${eventId}/people/${p.id}`} />)}
             </div>
             {list.hasNextPage && <div className="mt-6 text-center"><Button variant="secondary" loading={list.isFetchingNextPage} onClick={() => list.fetchNextPage()}>Show more</Button></div>}

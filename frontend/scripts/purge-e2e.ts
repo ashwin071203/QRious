@@ -39,13 +39,17 @@ async function main() {
     // Groups whose members are all test attendees (groups have no origin event).
     await c.query(`DELETE FROM conversations cv WHERE cv.kind = 'group' AND EXISTS (SELECT 1 FROM conversation_members m WHERE m.conversation_id = cv.id)
       AND NOT EXISTS (SELECT 1 FROM conversation_members m WHERE m.conversation_id = cv.id AND m.attendee_id NOT IN (SELECT id FROM e2e_attendees))`);
-    await c.query(`DELETE FROM interests WHERE created_by_attendee_id IN (SELECT id FROM e2e_attendees)`);
-    await c.query(`DELETE FROM skills WHERE created_by_attendee_id IN (SELECT id FROM e2e_attendees)`);
+    // Custom tags created by test attendees: removed after the attendees, and only if no remaining profile uses them.
+    await c.query(`CREATE TEMP TABLE e2e_interests ON COMMIT DROP AS SELECT id FROM interests WHERE created_by_attendee_id IN (SELECT id FROM e2e_attendees)`);
+    await c.query(`CREATE TEMP TABLE e2e_skills ON COMMIT DROP AS SELECT id FROM skills WHERE created_by_attendee_id IN (SELECT id FROM e2e_attendees)`);
     await c.query(`DELETE FROM subscription_invoices WHERE payment_id IN (SELECT id FROM payments WHERE attendee_id IN (SELECT id FROM e2e_attendees))`);
     await c.query(`DELETE FROM payments WHERE attendee_id IN (SELECT id FROM e2e_attendees)`);
     await c.query(`DELETE FROM subscriptions WHERE attendee_id IN (SELECT id FROM e2e_attendees)`);
     await c.query(`DELETE FROM notification_settings WHERE (recipient_type = 'attendee' AND recipient_id IN (SELECT id FROM e2e_attendees)) OR (recipient_type = 'organizer' AND recipient_id IN (SELECT id FROM e2e_orgusers))`);
     await c.query(`DELETE FROM attendees WHERE id IN (SELECT id FROM e2e_attendees)`);
+    await c.query(`DELETE FROM interests WHERE id IN (SELECT id FROM e2e_interests) AND NOT EXISTS (SELECT 1 FROM profile_interests p WHERE p.interest_id = interests.id)`);
+    await c.query(`DELETE FROM skills WHERE id IN (SELECT id FROM e2e_skills) AND NOT EXISTS (SELECT 1 FROM profile_skills p WHERE p.skill_id = skills.id)
+      AND NOT EXISTS (SELECT 1 FROM profile_looking_for_skills p WHERE p.skill_id = skills.id)`);
     // Test-mode billing rows of those organizations (credits → payments → subscriptions; FK order).
     await c.query(`DELETE FROM organization_event_credits WHERE organization_id IN (SELECT id FROM e2e_orgs)`);
     await c.query(`DELETE FROM subscription_invoices WHERE payment_id IN (SELECT id FROM payments WHERE organization_id IN (SELECT id FROM e2e_orgs))`);

@@ -44,12 +44,12 @@ export function PremiumBadge() {
 
 export function PersonCardView({ person, href, index = 0 }: { person: PersonCard; href: string; index?: number }) {
   return (
-    <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(index, 12) * 0.03 }}>
-      <Link href={href} className="card group flex h-full flex-col p-4 transition-all duration-200 hover:-translate-y-0.5 hover:border-accent/40">
+    <motion.div className="min-w-0" initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(index, 12) * 0.03 }}>
+      <Link href={href} className="card group flex h-full min-w-0 flex-col overflow-hidden p-4 transition-all duration-200 hover:-translate-y-0.5 hover:border-accent/40">
         <div className="flex items-start gap-3">
           <Avatar name={person.displayName} src={person.photo?.thumbnailUrl} size={56} />
           <div className="min-w-0 flex-1">
-            <p className="flex items-center gap-1.5 truncate font-display font-semibold"><span className="truncate">{person.displayName}</span>{person.premium && <PremiumBadge />}</p>
+            <p className="flex min-w-0 items-center gap-1.5 font-display font-semibold"><span className="min-w-0 truncate">{person.displayName}</span>{person.premium && <PremiumBadge />}</p>
             <p className="truncate text-sm text-text-2">@{person.username}</p>
             {person.profession && <p className="mt-0.5 truncate text-sm text-text-2">{person.profession}</p>}
           </div>
@@ -57,15 +57,15 @@ export function PersonCardView({ person, href, index = 0 }: { person: PersonCard
           {person.saved && <BookmarkCheck className="size-5 shrink-0 text-accent" aria-label="Saved" />}
         </div>
         {person.availability && <AvailabilityPill status={person.availability} className="mt-3 self-start" />}
-        {person.bio && <p className="mt-3 line-clamp-2 text-sm text-text-2">{person.bio}</p>}
+        {person.bio && <p className="mt-3 line-clamp-2 text-sm break-words text-text-2">{person.bio}</p>}
         {(person.commonInterests?.length || person.complementarySkills?.length) ? (
           <div className="mt-3 space-y-1 text-xs">
-            {!!person.complementarySkills?.length && <p className="flex items-center gap-1.5 text-pink"><Sparkles className="size-3.5" />Has what you&apos;re looking for: {person.complementarySkills.slice(0, 2).join(", ")}</p>}
-            {!!person.commonInterests?.length && <p className="flex items-center gap-1.5 text-accent-light"><Handshake className="size-3.5" />{person.commonInterests.length} shared interest{person.commonInterests.length > 1 ? "s" : ""}</p>}
+            {!!person.complementarySkills?.length && <p className="flex items-start gap-1.5 text-pink"><Sparkles className="mt-0.5 size-3.5 shrink-0" /><span className="min-w-0 break-words">Has what you&apos;re looking for: {person.complementarySkills.slice(0, 2).join(", ")}</span></p>}
+            {!!person.commonInterests?.length && <p className="flex items-center gap-1.5 text-accent-light"><Handshake className="size-3.5 shrink-0" />{person.commonInterests.length} shared interest{person.commonInterests.length > 1 ? "s" : ""}</p>}
           </div>
         ) : null}
         <div className="mt-3 flex flex-wrap gap-1.5">
-          {person.skills.slice(0, 4).map((s) => <span key={s.id} className="rounded-full bg-bg-2 px-2 py-0.5 text-xs text-text-2">{s.name}</span>)}
+          {person.skills.slice(0, 4).map((s) => <span key={s.id} className="max-w-full truncate rounded-full bg-bg-2 px-2 py-0.5 text-xs text-text-2">{s.name}</span>)}
         </div>
       </Link>
     </motion.div>
