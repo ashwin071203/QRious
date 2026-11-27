@@ -76,11 +76,11 @@ export async function listPlans(ctx: Ctx) {
   const plans = await ctx.db.select().from(subscriptionPlans).where(and(eq(subscriptionPlans.audience, audience), eq(subscriptionPlans.isActive, true))).orderBy(asc(subscriptionPlans.sortOrder));
   const feats = plans.length ? await ctx.db.select().from(subscriptionFeatures).where(inArray(subscriptionFeatures.planId, plans.map((p) => p.id))) : [];
   return {
-    paymentsEnabled: config.razorpay.enabled,
-    paymentsMode: config.razorpay.enabled ? config.razorpay.mode : "off",
+    paymentsEnabled: paymentsReady(),
+    paymentsMode: paymentsReady() ? config.razorpay.mode : "off",
     plans: plans.map((p) => ({ code: p.code, name: p.name, description: p.description, billingPeriod: p.billingPeriod, priceMinor: p.priceMinor, currency: p.currency, isDefault: p.isDefault,
       // Recurring plans need a linked Razorpay plan; one-time packages are paid with a Razorpay Order.
-      purchasable: config.razorpay.enabled && p.priceMinor > 0 && (p.billingPeriod === "one_time" || !!p.gatewayPlanId),
+      purchasable: paymentsReady() && p.priceMinor > 0 && (p.billingPeriod === "one_time" || !!linkedPlanId(p)),
       features: feats.filter((f) => f.planId === p.id && f.enabled).map((f) => f.featureKey) })),
   };
 }
@@ -97,8 +97,8 @@ export async function myBilling(ctx: Ctx) {
   const history = await ctx.db.select().from(payments).where(eq(payments.attendeeId, me.attendeeId)).orderBy(desc(payments.createdAt)).limit(50);
   return {
     ...ent,
-    paymentsEnabled: config.razorpay.enabled,
-    paymentsMode: config.razorpay.enabled ? config.razorpay.mode : "off",
+    paymentsEnabled: paymentsReady(),
+    paymentsMode: paymentsReady() ? config.razorpay.mode : "off",
     subscription: sub ? { status: sub.s.status, planName: sub.planName, planCode: sub.planCode, currentPeriodEnd: sub.s.currentPeriodEnd, cancelAtPeriodEnd: sub.s.cancelAtPeriodEnd } : null,
     promotion: promo ? { planName: promo.planName, endsAt: promo.p.endsAt } : null,
     payments: history.map((p) => ({ id: p.id, amountMinor: p.amountMinor, currency: p.currency, status: p.status, createdAt: p.createdAt, method: p.method })),
@@ -125,9 +125,44 @@ async function rzp<T>(path: string, init: { method?: string; body?: unknown } = 
   return { ok: res.ok, status: res.status, data: (await res.json().catch(() => ({}))) as T };
 }
 
+/** The Razorpay mode the keys belong to ("test" | "live"), or null when keys are missing or unrecognised. */
+export function gatewayMode(): "test" | "live" | null {
+  const m = config.razorpay.mode;
+  return m === "test" || m === "live" ? m : null;
+}
+
+/**
+ * A plan's Razorpay link only counts in the mode it was made in: test plan ids are ignored once live keys are in use
+ * (and vice versa), so a switch of keys can never send checkout to a plan that doesn't exist in that mode.
+ */
+export function linkedPlanId(p: { gatewayPlanId: string | null; gatewayPlanMode: string | null }): string | null {
+  const m = gatewayMode();
+  return m && p.gatewayPlanId && (p.gatewayPlanMode ?? "test") === m ? p.gatewayPlanId : null;
+}
+
+/** Records made in the other Razorpay mode (e.g. test-mode leftovers after go-live) are never acted on. */
+const sameMode = (recordMode: string | null) => !recordMode || recordMode === gatewayMode();
+
+/** Buyers can pay only when a verified webhook can confirm the payment — access is never granted any other way. */
+export function paymentsReady() {
+  return config.razorpay.enabled && !!config.razorpay.webhookSecret;
+}
+
 function requirePayments() {
-  if (!config.razorpay.enabled)
+  if (!paymentsReady())
     throw new AppError(503, "payments_unavailable", "Payments aren't switched on yet. Premium will be available soon.");
+}
+
+/**
+ * Cancels at Razorpay (at the end of the paid cycle) before anything is recorded, so a cancellation shown to the user is
+ * never one Razorpay doesn't know about (it would keep charging). Leftover records from the other mode have no gateway
+ * subscription reachable with the current keys and are cancelled locally only.
+ */
+async function cancelAtGateway(sub: { gatewaySubscriptionId: string | null; gatewayMode: string | null }) {
+  if (!sub.gatewaySubscriptionId || !sameMode(sub.gatewayMode)) return;
+  if (!config.razorpay.enabled) throw new AppError(503, "payments_unavailable", "We can't reach the payment provider right now. Please try again later.");
+  const r = await rzp(`/subscriptions/${sub.gatewaySubscriptionId}/cancel`, { method: "POST", body: { cancel_at_cycle_end: 1 } });
+  if (!r.ok) throw new AppError(502, "gateway_error", "The payment provider is unavailable. Please try again.");
 }
 
 const LIVE_STATUSES = ["created", "authenticated", "active", "pending"] as const;
@@ -140,7 +175,8 @@ export async function checkout(ctx: Ctx) {
   const { planCode } = await ctx.json<{ planCode?: string }>();
   const [plan] = await ctx.db.select().from(subscriptionPlans).where(and(eq(subscriptionPlans.code, planCode ?? ""), eq(subscriptionPlans.audience, "attendee"), eq(subscriptionPlans.isActive, true))).limit(1);
   if (!plan || plan.priceMinor === 0) throw notFound("Plan not found.");
-  if (!plan.gatewayPlanId) throw new AppError(503, "payments_unavailable", "This plan isn't available for purchase yet.");
+  const gatewayPlanId = linkedPlanId(plan);
+  if (!gatewayPlanId) throw new AppError(503, "payments_unavailable", "This plan isn't available for purchase yet.");
   // One paid subscription at a time — checked BEFORE creating anything at the gateway.
   const [live] = await ctx.db.select({ id: subscriptions.id, status: subscriptions.status }).from(subscriptions)
     .where(and(eq(subscriptions.attendeeId, me.attendeeId), inArray(subscriptions.status, ["authenticated", "active", "pending"]))).limit(1);
@@ -148,13 +184,13 @@ export async function checkout(ctx: Ctx) {
 
   const r = await rzp<{ id?: string; error?: { description?: string } }>("/subscriptions", {
     method: "POST",
-    body: { plan_id: plan.gatewayPlanId, total_count: plan.billingPeriod === "year" ? 5 : 60, customer_notify: 1, notes: { attendee_id: me.attendeeId, plan_code: plan.code } },
+    body: { plan_id: gatewayPlanId, total_count: plan.billingPeriod === "year" ? 5 : 60, customer_notify: 1, notes: { attendee_id: me.attendeeId, plan_code: plan.code } },
   });
   if (!r.ok || !r.data.id) throw new AppError(502, "gateway_error", "The payment provider couldn't start checkout. Please try again.");
   await ctx.db.transaction(async (tx) => {
     // Abandoned, never-paid checkouts are superseded (they can still be revived by a webhook if paid later).
     await tx.update(subscriptions).set({ status: "expired", updatedAt: new Date() }).where(and(eq(subscriptions.attendeeId, me.attendeeId), eq(subscriptions.status, "created")));
-    await tx.insert(subscriptions).values({ planId: plan.id, subscriberType: "attendee", attendeeId: me.attendeeId, status: "created", gatewaySubscriptionId: r.data.id! });
+    await tx.insert(subscriptions).values({ planId: plan.id, subscriberType: "attendee", attendeeId: me.attendeeId, status: "created", gatewaySubscriptionId: r.data.id!, gatewayMode: gatewayMode() });
   });
   return { gateway: "razorpay", mode: config.razorpay.mode, keyId: config.razorpay.keyId, subscriptionId: r.data.id };
 }
@@ -164,10 +200,7 @@ export async function cancelSubscription(ctx: Ctx) {
   const [sub] = await ctx.db.select().from(subscriptions).where(and(eq(subscriptions.attendeeId, me.attendeeId), inArray(subscriptions.status, ["active", "authenticated", "pending"]))).limit(1);
   if (!sub) throw notFound("You don't have an active subscription.");
   if (sub.cancelAtPeriodEnd) return reply(204);
-  if (config.razorpay.enabled && sub.gatewaySubscriptionId) {
-    const r = await rzp(`/subscriptions/${sub.gatewaySubscriptionId}/cancel`, { method: "POST", body: { cancel_at_cycle_end: 1 } });
-    if (!r.ok) throw new AppError(502, "gateway_error", "The payment provider is unavailable. Please try again.");
-  }
+  await cancelAtGateway(sub);
   // Access continues until the end of the paid period (§19.6).
   await ctx.db.update(subscriptions).set({ cancelAtPeriodEnd: true, updatedAt: new Date() }).where(eq(subscriptions.id, sub.id));
   await audit(ctx.db, { actorType: "attendee", actorId: me.attendeeId, action: "billing.subscription_cancel_requested", targetType: "subscription", targetId: sub.id });
@@ -218,14 +251,16 @@ export async function razorpayWebhook(ctx: Ctx) {
   // Recording and processing share one transaction: if processing fails nothing is stored, so Razorpay's retry is
   // processed again instead of being mistaken for a duplicate.
   const result = await ctx.db.transaction(async (tx) => {
-    const inserted = await tx.insert(paymentWebhooks).values({ gatewayEventId: eventId, eventType: payload.event, signatureValid: true, payload }).onConflictDoNothing().returning({ id: paymentWebhooks.id });
+    const inserted = await tx.insert(paymentWebhooks).values({ gatewayEventId: eventId, eventType: payload.event, signatureValid: true, payload, gatewayMode: gatewayMode() }).onConflictDoNothing().returning({ id: paymentWebhooks.id });
     if (!inserted.length) return "duplicate" as const;
 
     const subEntity = payload.payload.subscription?.entity;
     const pay = payload.payload.payment?.entity;
     if (subEntity) {
       const [sub] = await tx.select().from(subscriptions).where(eq(subscriptions.gatewaySubscriptionId, subEntity.id)).for("update").limit(1);
-      if (sub) {
+      if (sub && !sameMode(sub.gatewayMode))
+        await audit(tx, { actorType: "gateway", action: "billing.webhook_mode_mismatch", targetType: "subscription", targetId: sub.id, data: { recordMode: sub.gatewayMode, mode: gatewayMode() } });
+      else if (sub) {
         const everActivated = !!sub.currentPeriodStart;
         let status = nextSubscriptionStatus(sub.status, subEntity.status, everActivated);
         // A superseded checkout that was paid after all: revive it unless another subscription is already live.
@@ -249,7 +284,7 @@ export async function razorpayWebhook(ctx: Ctx) {
         if (status === "halted") await revokeSource(tx, sub.id);
         if (pay) {
           const st = pay.status === "captured" ? "captured" : pay.status === "failed" ? "failed" : pay.status === "refunded" ? "refunded" : "authorized";
-          await tx.insert(payments).values({ subscriptionId: sub.id, payerType: sub.subscriberType, attendeeId: sub.attendeeId, organizationId: sub.organizationId, gatewayPaymentId: pay.id,
+          await tx.insert(payments).values({ subscriptionId: sub.id, payerType: sub.subscriberType, attendeeId: sub.attendeeId, organizationId: sub.organizationId, gatewayPaymentId: pay.id, gatewayMode: sub.gatewayMode ?? gatewayMode(),
             amountMinor: pay.amount, currency: pay.currency, status: st, method: pay.method ?? null, capturedAt: st === "captured" ? new Date() : null })
             .onConflictDoUpdate({ target: payments.gatewayPaymentId, set: { status: st, method: pay.method ?? null, ...(st === "captured" ? { capturedAt: sql`coalesce(${payments.capturedAt}, now())` } : {}) } });
         }
@@ -277,7 +312,10 @@ export async function razorpayWebhook(ctx: Ctx) {
     if (payload.event === "refund.processed" && pay) {
       const refunded = pay.amount_refunded ?? payload.payload.refund?.entity.amount ?? pay.amount;
       const full = refunded >= pay.amount;
-      const [p] = await tx.update(payments).set({ status: full ? "refunded" : "partially_refunded", refundedMinor: refunded }).where(eq(payments.gatewayPaymentId, pay.id)).returning();
+      const [existing] = await tx.select({ mode: payments.gatewayMode }).from(payments).where(eq(payments.gatewayPaymentId, pay.id)).limit(1);
+      const [p] = existing && sameMode(existing.mode)
+        ? await tx.update(payments).set({ status: full ? "refunded" : "partially_refunded", refundedMinor: refunded }).where(eq(payments.gatewayPaymentId, pay.id)).returning()
+        : [];
       if (p?.subscriptionId && full) await revokeSource(tx, p.subscriptionId);
       if (p && full) await billingEvent(tx, { attendeeId: p.attendeeId, organizationId: p.organizationId }, "refunded", p.purpose === "event_credit" ? "Single Event" : "Subscription", p.id);
       // A fully refunded Single Event credit is withdrawn if unused. A used one keeps its event: data is never deleted.
@@ -318,7 +356,12 @@ export async function gatewayStatus(ctx: Ctx) {
     webhookUrl: webhookUrl(ctx), lastWebhook: last ?? null,
     webhookEvents: ["subscription.authenticated", "subscription.activated", "subscription.charged", "subscription.pending", "subscription.halted", "subscription.paused",
       "subscription.resumed", "subscription.cancelled", "subscription.completed", "subscription.updated", "payment.captured", "payment.failed", "order.paid", "refund.processed"],
-    plans: plans.map((p) => ({ code: p.code, audience: p.audience, name: p.name, billingPeriod: p.billingPeriod, priceMinor: p.priceMinor, currency: p.currency, isActive: p.isActive, gatewayPlanId: p.gatewayPlanId })),
+    plans: plans.map((p) => {
+      const linked = linkedPlanId(p);
+      // A link made in the other mode is shown (so the admin knows the plan needs relinking) but never used.
+      const otherModeLink = !linked && p.gatewayPlanId ? { gatewayPlanId: p.gatewayPlanId, mode: p.gatewayPlanMode ?? "test" } : null;
+      return { code: p.code, audience: p.audience, name: p.name, billingPeriod: p.billingPeriod, priceMinor: p.priceMinor, currency: p.currency, isActive: p.isActive, gatewayPlanId: linked, otherModeLink };
+    }),
   };
 }
 
@@ -332,21 +375,22 @@ async function purchasablePlan(ctx: Ctx, code: string) {
 export async function createGatewayPlan(ctx: Ctx, adminId: string, code: string) {
   if (config.razorpay.mode !== "test") throw new AppError(409, "test_mode_required", "Plans can only be created automatically with Razorpay TEST keys.");
   const plan = await purchasablePlan(ctx, code);
-  if (plan.gatewayPlanId) throw new AppError(409, "already_linked", "This plan is already linked to a Razorpay plan.");
+  if (linkedPlanId(plan)) throw new AppError(409, "already_linked", "This plan is already linked to a Razorpay plan. Unlink it first to replace it.");
   const r = await rzp<{ id?: string; error?: { description?: string } }>("/plans", {
     method: "POST",
     body: { period: PERIOD[plan.billingPeriod], interval: 1, item: { name: `QRious ${plan.name}`, amount: plan.priceMinor, currency: plan.currency, description: plan.description ?? undefined }, notes: { qrious_plan_code: plan.code } },
   });
   if (r.status === 401) throw new AppError(409, "subscriptions_not_enabled", "Razorpay refused: enable Subscriptions for your account in the Razorpay Dashboard (Test Mode), then try again.");
   if (!r.ok || !r.data.id) throw new AppError(502, "gateway_error", r.data.error?.description ?? "Razorpay rejected the plan.");
-  await ctx.db.update(subscriptionPlans).set({ gatewayPlanId: r.data.id }).where(eq(subscriptionPlans.id, plan.id));
+  await ctx.db.update(subscriptionPlans).set({ gatewayPlanId: r.data.id, gatewayPlanMode: "test" }).where(eq(subscriptionPlans.id, plan.id));
   await audit(ctx.db, { actorType: "admin", actorId: adminId, action: "billing.gateway_plan_created", targetType: "plan", targetId: plan.id, data: { gatewayPlanId: r.data.id, mode: config.razorpay.mode } });
   return { code: plan.code, gatewayPlanId: r.data.id };
 }
 
 /** Links a plan created in the Razorpay Dashboard after checking its period, amount and currency match exactly. */
 export async function linkGatewayPlan(ctx: Ctx, adminId: string, code: string, gatewayPlanId: unknown) {
-  if (!config.razorpay.enabled) throw new AppError(409, "payments_unavailable", "Add Razorpay test keys first.");
+  const mode = gatewayMode();
+  if (!config.razorpay.enabled || !mode) throw new AppError(409, "payments_unavailable", "Add Razorpay keys first (live keys also need RAZORPAY_ALLOW_LIVE=1).");
   const plan = await purchasablePlan(ctx, code);
   if (typeof gatewayPlanId !== "string" || !/^plan_[A-Za-z0-9]{6,40}$/.test(gatewayPlanId.trim()))
     throw new AppError(400, "validation_failed", "One or more fields are invalid.", { gatewayPlanId: ["Enter a Razorpay plan id (starts with plan_)."] });
@@ -358,9 +402,28 @@ export async function linkGatewayPlan(ctx: Ctx, adminId: string, code: string, g
   if (r.data.item?.amount !== plan.priceMinor) problems.push(`amount must be ${plan.priceMinor} paise`);
   if (r.data.item?.currency !== plan.currency) problems.push(`currency must be ${plan.currency}`);
   if (problems.length) throw new AppError(400, "validation_failed", "One or more fields are invalid.", { gatewayPlanId: [`That Razorpay plan doesn't match: ${problems.join(", ")}.`] });
-  await ctx.db.update(subscriptionPlans).set({ gatewayPlanId: id }).where(eq(subscriptionPlans.id, plan.id));
-  await audit(ctx.db, { actorType: "admin", actorId: adminId, action: "billing.gateway_plan_linked", targetType: "plan", targetId: plan.id, data: { gatewayPlanId: id } });
-  return { code: plan.code, gatewayPlanId: id };
+  // One Razorpay plan can back only one QRious plan (e.g. the Premium monthly id can't also be linked as Pro).
+  const [taken] = await ctx.db.select({ code: subscriptionPlans.code }).from(subscriptionPlans)
+    .where(and(eq(subscriptionPlans.gatewayPlanId, id), eq(subscriptionPlans.gatewayPlanMode, mode), sql`${subscriptionPlans.id} <> ${plan.id}`)).limit(1);
+  if (taken) throw new AppError(400, "validation_failed", "One or more fields are invalid.", { gatewayPlanId: [`That Razorpay plan is already linked to ${taken.code}.`] });
+  // Linking replaces any previous link (including a test-mode one); existing subscriptions keep their own Razorpay ids.
+  await ctx.db.update(subscriptionPlans).set({ gatewayPlanId: id, gatewayPlanMode: mode }).where(eq(subscriptionPlans.id, plan.id));
+  await audit(ctx.db, { actorType: "admin", actorId: adminId, action: "billing.gateway_plan_linked", targetType: "plan", targetId: plan.id,
+    data: { gatewayPlanId: id, mode, previous: plan.gatewayPlanId ? { gatewayPlanId: plan.gatewayPlanId, mode: plan.gatewayPlanMode ?? "test" } : null } });
+  return { code: plan.code, gatewayPlanId: id, mode };
+}
+
+/**
+ * Removes a plan's Razorpay link so it can be relinked (e.g. test → live). New checkouts for the plan are refused until
+ * it is linked again; existing subscriptions are unaffected because they carry their own Razorpay subscription ids.
+ */
+export async function unlinkGatewayPlan(ctx: Ctx, adminId: string, code: string) {
+  const plan = await purchasablePlan(ctx, code);
+  if (!plan.gatewayPlanId) return reply(204);
+  await ctx.db.update(subscriptionPlans).set({ gatewayPlanId: null, gatewayPlanMode: null }).where(eq(subscriptionPlans.id, plan.id));
+  await audit(ctx.db, { actorType: "admin", actorId: adminId, action: "billing.gateway_plan_unlinked", targetType: "plan", targetId: plan.id,
+    data: { gatewayPlanId: plan.gatewayPlanId, mode: plan.gatewayPlanMode ?? "test" } });
+  return reply(204);
 }
 
 // ---------- Organizer billing: Pro / Business subscriptions and Single Event credits (TEST MODE ONLY) ----------
@@ -392,8 +455,8 @@ export async function orgBilling(ctx: Ctx) {
   return {
     ...ent,
     canManageBilling: role === "owner",
-    paymentsEnabled: config.razorpay.enabled,
-    paymentsMode: config.razorpay.enabled ? config.razorpay.mode : "off",
+    paymentsEnabled: paymentsReady(),
+    paymentsMode: paymentsReady() ? config.razorpay.mode : "off",
     subscription: sub ? { status: lapsed ? "expired" : sub.s.status, planCode: sub.planCode, planName: sub.planName, priceMinor: sub.priceMinor, currentPeriodStart: sub.s.currentPeriodStart,
       currentPeriodEnd: periodEnd, cancelAtPeriodEnd: sub.s.cancelAtPeriodEnd, cancelledAt: sub.s.cancelledAt, createdAt: sub.s.createdAt } : null,
     promotion: promos[0] ? { planName: promos[0].planName, endsAt: promos[0].p.endsAt } : null,
@@ -413,18 +476,19 @@ export async function orgCheckout(ctx: Ctx) {
   if (!ORG_SUBSCRIPTION_PLANS.includes(planCode ?? "")) throw notFound("Plan not found.");
   const [plan] = await ctx.db.select().from(subscriptionPlans).where(and(eq(subscriptionPlans.code, planCode!), eq(subscriptionPlans.isActive, true))).limit(1);
   if (!plan) throw notFound("Plan not found.");
-  if (!plan.gatewayPlanId) throw new AppError(503, "payments_unavailable", "This plan isn't available for purchase yet.");
+  const gatewayPlanId = linkedPlanId(plan);
+  if (!gatewayPlanId) throw new AppError(503, "payments_unavailable", "This plan isn't available for purchase yet.");
   const [live] = await ctx.db.select({ id: subscriptions.id }).from(subscriptions)
     .where(and(eq(subscriptions.organizationId, orgId), inArray(subscriptions.status, ["authenticated", "active", "pending"]))).limit(1);
   if (live) throw new AppError(409, "already_subscribed", "This organization already has a subscription. Cancel it before choosing another plan.");
   const r = await rzp<{ id?: string }>("/subscriptions", {
     method: "POST",
-    body: { plan_id: plan.gatewayPlanId, total_count: 60, customer_notify: 1, notes: { organization_id: orgId, plan_code: plan.code } },
+    body: { plan_id: gatewayPlanId, total_count: 60, customer_notify: 1, notes: { organization_id: orgId, plan_code: plan.code } },
   });
   if (!r.ok || !r.data.id) throw new AppError(502, "gateway_error", "The payment provider couldn't start checkout. Please try again.");
   await ctx.db.transaction(async (tx) => {
     await tx.update(subscriptions).set({ status: "expired", updatedAt: new Date() }).where(and(eq(subscriptions.organizationId, orgId), eq(subscriptions.status, "created")));
-    await tx.insert(subscriptions).values({ planId: plan.id, subscriberType: "organization", organizationId: orgId, status: "created", gatewaySubscriptionId: r.data.id! });
+    await tx.insert(subscriptions).values({ planId: plan.id, subscriberType: "organization", organizationId: orgId, status: "created", gatewaySubscriptionId: r.data.id!, gatewayMode: gatewayMode() });
     await audit(tx, { actorType: "organizer", actorId: organizer.userId, action: "billing.checkout_started", targetType: "organization", targetId: orgId, organizationId: orgId, data: { plan: plan.code } });
   });
   return { gateway: "razorpay", kind: "subscription", mode: config.razorpay.mode, keyId: config.razorpay.keyId, subscriptionId: r.data.id, planName: plan.name };
@@ -436,10 +500,7 @@ export async function orgCancelSubscription(ctx: Ctx) {
   const [sub] = await ctx.db.select().from(subscriptions).where(and(eq(subscriptions.organizationId, orgId), inArray(subscriptions.status, ["active", "authenticated", "pending"]))).limit(1);
   if (!sub) throw notFound("This organization doesn't have an active subscription.");
   if (sub.cancelAtPeriodEnd) return reply(204);
-  if (config.razorpay.enabled && sub.gatewaySubscriptionId) {
-    const r = await rzp(`/subscriptions/${sub.gatewaySubscriptionId}/cancel`, { method: "POST", body: { cancel_at_cycle_end: 1 } });
-    if (!r.ok) throw new AppError(502, "gateway_error", "The payment provider is unavailable. Please try again.");
-  }
+  await cancelAtGateway(sub);
   // Paid features continue until the end of the paid period; events and data are never removed.
   await ctx.db.update(subscriptions).set({ cancelAtPeriodEnd: true, updatedAt: new Date() }).where(eq(subscriptions.id, sub.id));
   await audit(ctx.db, { actorType: "organizer", actorId: organizer.userId, action: "billing.subscription_cancel_requested", targetType: "subscription", targetId: sub.id, organizationId: orgId });
@@ -462,7 +523,7 @@ export async function eventCreditOrder(ctx: Ctx) {
     body: { amount: plan.priceMinor, currency: plan.currency, receipt, notes: { organization_id: orgId, plan_code: plan.code, purpose: "event_credit" } },
   });
   if (!r.ok || !r.data.id) throw new AppError(502, "gateway_error", "The payment provider couldn't start checkout. Please try again.");
-  await ctx.db.insert(payments).values({ payerType: "organization", organizationId: orgId, gatewayOrderId: r.data.id, amountMinor: plan.priceMinor, currency: plan.currency, status: "created", purpose: "event_credit", planId: plan.id });
+  await ctx.db.insert(payments).values({ payerType: "organization", organizationId: orgId, gatewayOrderId: r.data.id, gatewayMode: gatewayMode(), amountMinor: plan.priceMinor, currency: plan.currency, status: "created", purpose: "event_credit", planId: plan.id });
   await audit(ctx.db, { actorType: "organizer", actorId: organizer.userId, action: "billing.event_credit_order", targetType: "organization", targetId: orgId, organizationId: orgId, data: { orderId: r.data.id } });
   return { gateway: "razorpay", kind: "order", mode: config.razorpay.mode, keyId: config.razorpay.keyId, orderId: r.data.id, amountMinor: plan.priceMinor, currency: plan.currency, planName: plan.name };
 }
@@ -482,7 +543,7 @@ type RzpPayment = { id: string; order_id?: string; amount: number; currency: str
  */
 async function settleEventCreditPayment(tx: Executor, orderId: string, pay: RzpPayment): Promise<"granted" | "already" | "failed" | "ignored"> {
   const [row] = await tx.select().from(payments).where(and(eq(payments.gatewayOrderId, orderId), eq(payments.purpose, "event_credit"))).for("update").limit(1);
-  if (!row || !row.organizationId) return "ignored";
+  if (!row || !row.organizationId || !sameMode(row.gatewayMode)) return "ignored";
   if (pay.amount !== row.amountMinor || pay.currency !== row.currency) {
     await audit(tx, { actorType: "gateway", action: "billing.amount_mismatch", targetType: "payment", targetId: row.id, organizationId: row.organizationId, data: { orderId, paid: pay.amount, expected: row.amountMinor } });
     return "ignored";
@@ -515,8 +576,8 @@ export async function eventCreditVerify(ctx: Ctx) {
   const orderId = String(b.orderId ?? ""), paymentId = String(b.paymentId ?? ""), signature = String(b.signature ?? "");
   if (!/^order_[A-Za-z0-9]{6,40}$/.test(orderId) || !/^pay_[A-Za-z0-9]{6,40}$/.test(paymentId)) throw new AppError(400, "bad_request", "Invalid payment details.");
   if (!verifyPaymentSignature(orderId, paymentId, signature, config.razorpay.keySecret)) throw new AppError(400, "invalid_signature", "We couldn't verify this payment.");
-  const [row] = await ctx.db.select({ id: payments.id, organizationId: payments.organizationId }).from(payments).where(and(eq(payments.gatewayOrderId, orderId), eq(payments.purpose, "event_credit"))).limit(1);
-  if (!row || row.organizationId !== orgId) throw notFound("Payment not found.");
+  const [row] = await ctx.db.select({ id: payments.id, organizationId: payments.organizationId, gatewayMode: payments.gatewayMode }).from(payments).where(and(eq(payments.gatewayOrderId, orderId), eq(payments.purpose, "event_credit"))).limit(1);
+  if (!row || row.organizationId !== orgId || !sameMode(row.gatewayMode)) throw notFound("Payment not found.");
   let pay = (await rzp<RzpPayment>(`/payments/${paymentId}`)).data;
   if (!pay?.id || pay.order_id !== orderId) throw new AppError(400, "invalid_payment", "This payment doesn't belong to the order.");
   if (pay.status === "authorized") {

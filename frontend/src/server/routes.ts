@@ -272,6 +272,7 @@ const routes: Route[] = [
     const b = await ctx.json<{ gatewayPlanId?: string }>();
     return billing.linkGatewayPlan(ctx, a.userId, ctx.params.code!, b.gatewayPlanId);
   }),
+  R("DELETE", "/admin/payments/plans/:code/gateway", async (ctx) => { const a = await organizers.requireAdmin(ctx); return billing.unlinkGatewayPlan(ctx, a.userId, ctx.params.code!); }),
   R("POST", "/admin/promotional-access", admin.grantPromotion),
   R("POST", "/admin/announcements", notif.adminAnnouncement),
   R("POST", "/admin/promotional-access/:id/revoke", admin.revokePromotion),

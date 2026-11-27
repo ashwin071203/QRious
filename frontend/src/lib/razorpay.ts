@@ -26,6 +26,9 @@ export async function openRazorpayCheckout(opts: { keyId: string; name: string; 
   prefill?: { name?: string; email?: string } }): Promise<RazorpaySuccess | null> {
   try { await loadRazorpay(); } catch { throw new Error("The payment window couldn't load. Check your connection and try again."); }
   return new Promise((resolve, reject) => {
+    // A failed attempt doesn't end checkout: Razorpay keeps its window open so the buyer can retry with another card or
+    // method. Remember the failure and report it only if they close the window without a successful retry.
+    let lastError: Error | null = null;
     const rz = new window.Razorpay!({
       key: opts.keyId,
       name: opts.name,
@@ -34,9 +37,9 @@ export async function openRazorpayCheckout(opts: { keyId: string; name: string; 
       prefill: opts.prefill,
       theme: { color: "#7C3AED" },
       handler: (r: RazorpaySuccess) => resolve(r),
-      modal: { ondismiss: () => resolve(null) },
+      modal: { ondismiss: () => (lastError ? reject(lastError) : resolve(null)) },
     });
-    rz.on("payment.failed", (r) => reject(new Error(r.error?.description ?? "The payment failed. No money was taken.")));
+    rz.on("payment.failed", (r) => { lastError = new Error(r.error?.description ?? "The payment failed. No money was taken."); });
     rz.open();
   });
 }

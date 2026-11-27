@@ -86,7 +86,10 @@ export default function PremiumPage() {
               <p className="text-sm text-text-2">Current plan</p>
               <p className="flex items-center gap-2 font-display text-xl font-bold">{isPremium && <BadgeCheck className="size-5 text-pink" />}{billing.data?.planName ?? "Free"}</p>
               {billing.data?.promotion && <p className="mt-1 text-sm text-text-2">Promotional access until {formatDateTime(billing.data.promotion.endsAt)}</p>}
-              {billing.data?.subscription?.currentPeriodEnd && <p className="mt-1 text-sm text-text-2">{billing.data.subscription.cancelAtPeriodEnd ? "Ends" : "Renews"} {formatDateTime(billing.data.subscription.currentPeriodEnd)}</p>}
+              {/* Only a running subscription renews; a cancelled one runs to the end of its paid period. Halted/expired ones show nothing here. */}
+              {billing.data?.subscription?.currentPeriodEnd && ["active", "pending", "cancelled"].includes(billing.data.subscription.status) && new Date(billing.data.subscription.currentPeriodEnd) > new Date() && (
+                <p className="mt-1 text-sm text-text-2">{billing.data.subscription.cancelAtPeriodEnd || billing.data.subscription.status === "cancelled" ? "Ends" : "Renews"} {formatDateTime(billing.data.subscription.currentPeriodEnd)}</p>
+              )}
             </div>
             {["active", "pending"].includes(billing.data?.subscription?.status ?? "") && !billing.data!.subscription!.cancelAtPeriodEnd && <Button variant="secondary" loading={busy} onClick={cancel}>Cancel subscription</Button>}
           </div>

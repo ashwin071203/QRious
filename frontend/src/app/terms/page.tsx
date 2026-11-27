@@ -20,7 +20,7 @@ export default function TermsPage() {
         <h2>No guarantees</h2>
         <p>Joining an event on QRious doesn&apos;t prove someone attended. Meet people in public places and use your judgement.</p>
         <h2>Paid plans</h2>
-        <p>The essential networking features are free. Paid plans, when available, add optional features and can be cancelled at any time; access continues until the end of the paid period.</p>
+        <p>The essential networking features are free. Paid plans, when available, add optional features and can be cancelled at any time; access continues until the end of the paid period. See the <Link href="/refunds" className="text-accent-light underline">Refund &amp; Cancellation Policy</Link>.</p>
       </article>
     </main>
   );

@@ -244,7 +244,7 @@ function Categories() {
 
 type Gateway = { mode: "off" | "test" | "live" | "invalid"; enabled: boolean; keyIdSet: boolean; keySecretSet: boolean; webhookSecretSet: boolean; keysValid: boolean | null; subscriptionsEnabled: boolean | null;
   webhookUrl: string; webhookEvents: string[]; lastWebhook: { at: string; type: string } | null;
-  plans: { code: string; audience: string; name: string; billingPeriod: string; priceMinor: number; currency: string; isActive: boolean; gatewayPlanId: string | null }[] };
+  plans: { code: string; audience: string; name: string; billingPeriod: string; priceMinor: number; currency: string; isActive: boolean; gatewayPlanId: string | null; otherModeLink: { gatewayPlanId: string; mode: string } | null }[] };
 
 function Check({ ok, label, detail }: { ok: boolean | null; label: string; detail?: string }) {
   return (
@@ -255,21 +255,25 @@ function Check({ ok, label, detail }: { ok: boolean | null; label: string; detai
   );
 }
 
-/** Razorpay setup (D-01). Shows only whether secrets are present — never their values. Test mode only. */
+/** Razorpay setup. Shows only whether secrets are present — never their values. Live keys need RAZORPAY_ALLOW_LIVE=1. */
 function PaymentsSetup() {
   const toast = useToast();
   const { busy, run } = useRun();
   const q = useQuery({ queryKey: ["admin-gateway"], queryFn: () => api<Gateway>("/admin/payments/gateway") });
   const [link, setLink] = useState<Record<string, string>>({});
   const [linkErr, setLinkErr] = useState<Record<string, string | undefined>>({});
+  const [replacing, setReplacing] = useState<Record<string, boolean>>({});
   if (!q.data) return <Skeleton className="h-48" />;
   const g = q.data;
-  const modeText = { off: "Keys missing", test: "TEST mode — no real money moves", live: "LIVE keys detected — payments kept OFF (test mode only)", invalid: "Key id not recognised — payments kept OFF" }[g.mode];
+  const modeText = { off: "Keys missing", test: "TEST mode — no real money moves", live: g.enabled ? "LIVE mode — real payments" : "LIVE keys detected — payments OFF until RAZORPAY_ALLOW_LIVE=1", invalid: "Key id not recognised — payments kept OFF" }[g.mode];
+  const dash = g.mode === "live" ? "Live Mode" : "Test Mode";
   async function linkPlan(code: string) {
     setLinkErr((e) => ({ ...e, [code]: undefined }));
     try {
       await api(`/admin/payments/plans/${code}/gateway`, { method: "PUT", body: { gatewayPlanId: link[code] ?? "" } });
       toast("success", "Plan linked");
+      setReplacing((r) => ({ ...r, [code]: false }));
+      setLink((l) => ({ ...l, [code]: "" }));
       q.refetch();
     } catch (e) {
       setLinkErr((x) => ({ ...x, [code]: e instanceof ApiError ? (e.fieldError("gatewayPlanId") ?? e.message) : "Failed." }));
@@ -279,17 +283,17 @@ function PaymentsSetup() {
     <section className="card space-y-4 p-5 text-sm">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="font-display font-semibold">Razorpay</h2>
-        <span className={`rounded-full px-3 py-1 text-xs ${g.mode === "test" ? "bg-warning/15 text-warning" : g.enabled ? "bg-success/15 text-success" : "bg-white/5 text-text-2"}`}>{modeText}</span>
+        <span className={`rounded-full px-3 py-1 text-xs ${g.mode === "test" ? "bg-warning/15 text-warning" : g.enabled ? "bg-success/15 text-success" : "bg-error/15 text-error"}`}>{modeText}</span>
       </div>
       <ul>
         <Check ok={g.keyIdSet} label="RAZORPAY_KEY_ID is set" />
         <Check ok={g.keySecretSet} label="RAZORPAY_KEY_SECRET is set" />
-        <Check ok={g.mode === "test"} label="Keys are TEST keys (rzp_test_…)" />
-        <Check ok={g.keysValid} label="Razorpay accepts the keys" detail={g.keysValid === null ? "Checked once keys are present" : g.keysValid ? undefined : "Razorpay rejected the key id / secret pair — re-copy both from Dashboard → Account & Settings → API Keys (Test Mode)."} />
-        <Check ok={g.subscriptionsEnabled} label="Subscriptions enabled on the Razorpay account" detail={g.subscriptionsEnabled === false ? "Razorpay Dashboard (Test Mode) → Subscriptions → enable / Get started, then reload this page." : undefined} />
+        <Check ok={g.enabled} label={g.mode === "live" ? "Live payments allowed (RAZORPAY_ALLOW_LIVE=1)" : "Payments switched on (test keys, or live keys with RAZORPAY_ALLOW_LIVE=1)"} />
+        <Check ok={g.keysValid} label="Razorpay accepts the keys" detail={g.keysValid === null ? "Checked once keys are present" : g.keysValid ? undefined : `Razorpay rejected the key id / secret pair — re-copy both from Dashboard → Account & Settings → API Keys (${dash}).`} />
+        <Check ok={g.subscriptionsEnabled} label="Subscriptions enabled on the Razorpay account" detail={g.subscriptionsEnabled === false ? `Razorpay Dashboard (${dash}) → Subscriptions → enable / Get started, then reload this page.` : undefined} />
         <Check ok={g.webhookSecretSet} label="RAZORPAY_WEBHOOK_SECRET is set" />
         <Check ok={!!g.lastWebhook} label="Webhook received" detail={g.lastWebhook ? `${g.lastWebhook.type} · ${relativeTime(g.lastWebhook.at)}` : "Appears after your first test payment"} />
-        <Check ok={g.plans.every((p) => !!p.gatewayPlanId)} label="Subscription plans linked to Razorpay plans (Premium, Pro, Business)" detail="Single Event packages use Razorpay Orders and need no plan." />
+        <Check ok={g.plans.every((p) => !!p.gatewayPlanId)} label={`Subscription plans linked to ${g.mode === "live" ? "LIVE" : "test"} Razorpay plans (Premium, Pro, Business)`} detail={g.plans.some((p) => p.otherModeLink) ? `Links made in the other mode are ignored — link each plan to its ${g.mode === "live" ? "live" : "test"} plan_ id.` : "Single Event packages use Razorpay Orders and need no plan."} />
       </ul>
 
       <div>
@@ -299,15 +303,27 @@ function PaymentsSetup() {
             <li key={p.code} className="rounded-xl bg-bg-2 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span>{p.name} <span className="text-text-2">({p.audience === "organization" ? "organizer" : "attendee"})</span> · {inr(p.priceMinor)} / {p.billingPeriod}</span>
-                {p.gatewayPlanId ? <code className="font-mono text-xs text-success">{p.gatewayPlanId}</code>
-                  : <Button size="sm" disabled={g.mode !== "test" || !g.keysValid || g.subscriptionsEnabled === false} loading={busy === p.code}
-                      onClick={() => run(p.code, () => api(`/admin/payments/plans/${p.code}/create`, { method: "POST" }), "Created in Razorpay (test mode)", () => q.refetch())}>Create in Razorpay (test)</Button>}
+                {p.gatewayPlanId ? (
+                  <span className="flex flex-wrap items-center gap-2">
+                    <code className="font-mono text-xs text-success">{p.gatewayPlanId}</code>
+                    <Button size="sm" variant="ghost" onClick={() => setReplacing((r) => ({ ...r, [p.code]: !r[p.code] }))}>{replacing[p.code] ? "Keep" : "Replace"}</Button>
+                    <Button size="sm" variant="ghost" loading={busy === `unlink-${p.code}`}
+                      onClick={() => { if (confirm(`Unlink ${p.name} from ${p.gatewayPlanId}? New checkouts for this plan stop until you link it again. Existing subscriptions are not affected.`))
+                        run(`unlink-${p.code}`, () => api(`/admin/payments/plans/${p.code}/gateway`, { method: "DELETE" }), "Plan unlinked", () => q.refetch()); }}>Unlink</Button>
+                  </span>
+                ) : g.mode === "test" ? (
+                  <Button size="sm" disabled={!g.keysValid || g.subscriptionsEnabled === false} loading={busy === p.code}
+                    onClick={() => run(p.code, () => api(`/admin/payments/plans/${p.code}/create`, { method: "POST" }), "Created in Razorpay (test mode)", () => q.refetch())}>Create in Razorpay (test)</Button>
+                ) : <span className="text-xs text-warning">Not linked</span>}
               </div>
-              {!p.gatewayPlanId && g.enabled && (
+              {p.otherModeLink && (
+                <p className="mt-1 text-xs text-text-2">Ignored: linked to <code className="font-mono">{p.otherModeLink.gatewayPlanId}</code> from {p.otherModeLink.mode} mode.</p>
+              )}
+              {(!p.gatewayPlanId || replacing[p.code]) && g.enabled && (
                 <div className="mt-2 flex flex-wrap gap-2">
-                  <Input aria-label={`Razorpay plan id for ${p.name}`} placeholder="…or paste an existing plan_ id" className="h-10 max-w-xs" value={link[p.code] ?? ""}
+                  <Input aria-label={`Razorpay plan id for ${p.name}`} placeholder={g.mode === "live" ? "Paste the live plan_ id" : "…or paste an existing plan_ id"} className="h-10 max-w-xs" value={link[p.code] ?? ""}
                     onChange={(e) => setLink({ ...link, [p.code]: e.target.value })} aria-invalid={!!linkErr[p.code]} />
-                  <Button size="sm" variant="secondary" onClick={() => linkPlan(p.code)} disabled={!link[p.code]}>Link</Button>
+                  <Button size="sm" variant="secondary" onClick={() => linkPlan(p.code)} disabled={!link[p.code]}>{p.gatewayPlanId ? "Replace link" : "Link"}</Button>
                   {linkErr[p.code] && <p className="w-full text-xs text-error">{linkErr[p.code]}</p>}
                 </div>
               )}
@@ -317,7 +333,7 @@ function PaymentsSetup() {
       </div>
 
       <div>
-        <h3 className="mb-1 font-medium">Webhook (Razorpay Dashboard → Test Mode → Account &amp; Settings → Webhooks)</h3>
+        <h3 className="mb-1 font-medium">Webhook (Razorpay Dashboard → {dash} → Account &amp; Settings → Webhooks)</h3>
         <div className="flex items-center gap-2 rounded-xl bg-bg-2 px-3 py-2">
           <code className="flex-1 font-mono text-xs break-all">{g.webhookUrl}</code>
           <button type="button" className="text-xs text-accent-light" onClick={() => navigator.clipboard?.writeText(g.webhookUrl).then(() => toast("success", "Copied"), () => {})}>Copy</button>

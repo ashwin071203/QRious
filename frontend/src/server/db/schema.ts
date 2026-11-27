@@ -740,6 +740,8 @@ export const subscriptionPlans = pgTable("subscription_plans", {
   priceMinor: integer("price_minor").notNull(),
   currency: text("currency").notNull().default("INR"),
   gatewayPlanId: text("gateway_plan_id"),
+  /** Razorpay mode the linked plan belongs to ('test' | 'live'). A link only counts while the app runs in that mode. */
+  gatewayPlanMode: text("gateway_plan_mode"),
   isDefault: boolean("is_default").notNull().default(false),
   isActive: boolean("is_active").notNull().default(true),
   sortOrder: smallint("sort_order").notNull().default(0),
@@ -767,6 +769,8 @@ export const subscriptions = pgTable("subscriptions", {
   status: text("status").notNull().default("created"),
   gateway: text("gateway").notNull().default("razorpay"),
   gatewaySubscriptionId: text("gateway_subscription_id"),
+  /** Razorpay mode the subscription was created in ('test' | 'live'). */
+  gatewayMode: text("gateway_mode"),
   currentPeriodStart: ts("current_period_start"),
   currentPeriodEnd: ts("current_period_end"),
   cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
@@ -790,6 +794,8 @@ export const payments = pgTable("payments", {
   gateway: text("gateway").notNull().default("razorpay"),
   gatewayOrderId: text("gateway_order_id"),
   gatewayPaymentId: text("gateway_payment_id"),
+  /** Razorpay mode the payment/order was made in ('test' | 'live'). */
+  gatewayMode: text("gateway_mode"),
   amountMinor: integer("amount_minor").notNull(),
   taxMinor: integer("tax_minor").notNull().default(0),
   feeMinor: integer("fee_minor").notNull().default(0),
@@ -822,6 +828,8 @@ export const paymentWebhooks = pgTable("payment_webhooks", {
   receivedAt: createdAt(),
   processedAt: ts("processed_at"),
   processingError: text("processing_error"),
+  /** Mode of the webhook secret that verified it ('test' | 'live'). */
+  gatewayMode: text("gateway_mode"),
 }, (t) => [uniqueIndex("ux_payment_webhooks_event").on(t.gatewayEventId)]);
 
 export const subscriptionInvoices = pgTable("subscription_invoices", {

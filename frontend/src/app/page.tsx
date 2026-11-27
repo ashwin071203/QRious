@@ -132,7 +132,7 @@ export default function Home() {
 
       <footer className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 border-t border-line px-5 py-8 text-sm text-text-2 sm:flex-row">
         <Logo className="text-base" />
-        <p className="flex flex-wrap justify-center gap-4"><Link href="/privacy" className="hover:text-text">Privacy</Link><Link href="/terms" className="hover:text-text">Terms</Link><span>© 2026 QRious · Photos from Unsplash</span></p>
+        <p className="flex flex-wrap justify-center gap-4"><Link href="/privacy" className="hover:text-text">Privacy</Link><Link href="/terms" className="hover:text-text">Terms</Link><Link href="/refunds" className="hover:text-text">Refunds &amp; Cancellation</Link><Link href="/contact" className="hover:text-text">Contact</Link><span>© 2026 QRious · Photos from Unsplash</span></p>
       </footer>
     </main>
   );
