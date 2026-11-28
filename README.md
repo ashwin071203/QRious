@@ -23,7 +23,7 @@ run, test, deploy and operate it.
 6. [Data model](#6-data-model)
 7. [Authentication and security](#7-authentication-and-security)
 8. [Payments and plans](#8-payments-and-plans)
-9. [Notifications and live updates](#9-notifications-and-live-updates)
+9. [Notificationzs and live updates](#9-notifications-and-live-updates)
 10. [Frontend](#10-frontend)
 11. [Configuration](#11-configuration)
 12. [Running locally](#12-running-locally)
