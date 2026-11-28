@@ -112,7 +112,7 @@ export function TopBar({ eventId, title }: { eventId?: string; title?: string })
   ];
   return (
     <header className="sticky top-0 z-30 border-b border-line bg-bg/80 backdrop-blur-xl">
-      <div className="mx-auto flex h-14 max-w-5xl items-center gap-3 px-4">
+      <div className="mx-auto flex h-14 max-w-7xl items-center gap-3 px-4 sm:px-6 lg:px-8">
         <Link href={base ? `${base}/home` : "/app"} aria-label="QRious home"><Logo className="text-base" /></Link>
         {title && <span className="min-w-0 truncate text-sm text-text-2 md:hidden">{title}</span>}
         <nav className="ml-3 hidden items-center gap-0.5 md:flex" aria-label="Main">
@@ -140,7 +140,9 @@ export function TopBar({ eventId, title }: { eventId?: string; title?: string })
 }
 
 export function PageContainer({ children, className }: { children: ReactNode; className?: string }) {
-  return <main className={cn("mx-auto max-w-5xl px-4 pt-6 pb-28 md:pb-12", className)}>{children}</main>;
+  // Pages that pass their own max-w-* (forms, settings) keep it; everything else uses the wide desktop frame.
+  const width = className?.includes("max-w-") ? "" : "max-w-7xl";
+  return <main className={cn("mx-auto px-4 pt-6 pb-28 sm:px-6 md:pb-12 lg:px-8 lg:pt-8", width, className)}>{children}</main>;
 }
 
 /** Standard attendee page frame. */

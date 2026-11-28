@@ -24,7 +24,7 @@ export default function MessagesPage() {
   const q = useConversations();
   const [creating, setCreating] = useState(false);
   return (
-    <AttendeePage title="Messages" className="max-w-3xl">
+    <AttendeePage title="Messages" className="max-w-5xl">
       <PageHeader title="Messages" subtitle="Private chats and groups with your connections."
         actions={<Button variant="secondary" size="sm" icon={<Users className="size-4" />} onClick={() => setCreating(true)}>New group</Button>} />
       {q.isError ? <ErrorState error={q.error} onRetry={() => q.refetch()} /> : q.isLoading ? <Skeleton className="h-60" /> : !q.data?.length ? (

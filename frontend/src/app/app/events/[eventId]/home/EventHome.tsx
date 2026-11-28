@@ -80,7 +80,7 @@ export function EventHome({ params }: { params: Promise<{ eventId: string }> }) 
       {ev && ev.networkingStatus === "paused" && <p className="card mt-4 px-4 py-3 text-sm text-warning">The organizer has paused networking for now. Your connections and chats still work.</p>}
       {ev && ev.networkingStatus === "ended" && <p className="card mt-4 px-4 py-3 text-sm text-text-2">This event has ended. Your connections and conversations stay with you.</p>}
 
-      <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_320px]">
+      <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_340px] xl:grid-cols-[1fr_380px]">
         <div className="space-y-6">
           <motion.section initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="card flex items-center gap-4 p-5">
             {profile ? <Avatar name={profile.displayName} src={profile.photo?.url} size={56} /> : <Skeleton className="size-14 rounded-full" />}

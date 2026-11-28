@@ -22,7 +22,7 @@ export default function EditProfilePage() {
   return (
     <>
       <TopBar title="Edit profile" />
-      <PageContainer className="max-w-2xl">
+      <PageContainer className="max-w-3xl">
         <h1 className="font-display text-2xl font-bold">Edit profile</h1>
         <p className="mt-1 text-sm text-text-2">Changes apply to your global profile at every event.</p>
         {data ? <Editor profile={data} /> : <div className="mt-6 space-y-4"><Skeleton className="h-40" /><Skeleton className="h-40" /></div>}

@@ -13,12 +13,15 @@ export function EventLanding({ code, event }: { code: string; event: PublicEvent
     <main className="ambient min-h-dvh">
       {/* Hero: large event image with gradient overlay (PRD §9.6) */}
       <section className="relative isolate overflow-hidden">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={banner} alt="" fetchPriority="high" className="absolute inset-0 -z-10 size-full object-cover opacity-70" />
-        <div className="absolute inset-0 -z-10 bg-gradient-to-b from-bg/30 via-bg/70 to-bg" />
-        <div className="absolute inset-0 -z-10 bg-[radial-gradient(80%_60%_at_20%_100%,rgba(139,92,246,0.35),transparent)]" />
+        {/* The image layers fade out at the bottom so the hero blends into the page with no hard edge. */}
+        <div className="absolute inset-0 -z-10 [mask-image:linear-gradient(to_bottom,#000_55%,transparent)]">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={banner} alt="" fetchPriority="high" className="size-full object-cover opacity-70" />
+          <div className="absolute inset-0 bg-gradient-to-b from-bg/30 via-bg/65 to-bg/90" />
+          <div className="absolute inset-0 bg-[radial-gradient(80%_60%_at_20%_100%,rgba(139,92,246,0.35),transparent)]" />
+        </div>
 
-        <div className="mx-auto max-w-3xl px-5 pt-[max(env(safe-area-inset-top),1.25rem)]">
+        <div className="mx-auto max-w-5xl px-5 pt-[max(env(safe-area-inset-top),1.25rem)] sm:px-8">
           <div className="flex items-center justify-between py-2">
             <Link href="/" aria-label="QRious home"><Logo /></Link>
             <span className="glass inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium">
@@ -27,12 +30,12 @@ export function EventLanding({ code, event }: { code: string; event: PublicEvent
             </span>
           </div>
 
-          <div className="pt-20 pb-8 sm:pt-28">
+          <div className="pt-20 pb-10 sm:pt-28 lg:pt-40 lg:pb-16">
             <span className="glass inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold tracking-wide text-accent-light uppercase">
               <Sparkles className="size-3.5" /> {event.categoryName}
             </span>
-            <h1 className="mt-4 font-display text-[2.15rem] leading-[1.08] font-bold tracking-tight text-balance sm:text-5xl">{event.name}</h1>
-            <p className="mt-3 text-sm text-text-2">
+            <h1 className="mt-4 font-display text-[2.15rem] leading-[1.08] font-bold tracking-tight text-balance sm:text-5xl lg:text-6xl">{event.name}</h1>
+            <p className="mt-3 text-sm text-text-2 lg:text-base">
               Hosted by <span className="font-medium text-text">{event.organizer.name}</span>
             </p>
             {event.headline && <p className="glass mt-4 inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm"><Users className="size-4 text-accent" />{event.headline}</p>}
@@ -40,7 +43,7 @@ export function EventLanding({ code, event }: { code: string; event: PublicEvent
         </div>
       </section>
 
-      <div className="mx-auto max-w-3xl space-y-6 px-5 pb-[max(env(safe-area-inset-bottom),2.5rem)]">
+      <div className="mx-auto max-w-5xl space-y-6 px-5 pb-[max(env(safe-area-inset-bottom),2.5rem)] sm:px-8 lg:space-y-8">
         {/* Event facts */}
         <div className="grid gap-3 sm:grid-cols-3">
           <Fact icon={<CalendarDays className="size-4" />} label="Date" value={formatEventDate(event.startsAt, event.endsAt, event.timeZone)} />
@@ -56,7 +59,7 @@ export function EventLanding({ code, event }: { code: string; event: PublicEvent
         )}
 
         {/* EXACTLY two primary options (NN-03) */}
-        <section aria-label="Choose how to continue" className="grid gap-4 sm:grid-cols-2">
+        <section aria-label="Choose how to continue" className="grid gap-4 sm:grid-cols-2 lg:gap-6">
           <OptionCard
             href={`/e/${code}/discover`}
             icon={<Users className="size-6" />}
@@ -77,7 +80,7 @@ export function EventLanding({ code, event }: { code: string; event: PublicEvent
         </section>
 
         {event.description && (
-          <section className="card p-5">
+          <section className="card p-5 lg:p-7">
             <h2 className="font-display text-lg font-semibold">About this event</h2>
             <p className="mt-2 text-[15px] leading-relaxed whitespace-pre-line text-text-2">{event.description}</p>
           </section>
@@ -111,13 +114,13 @@ function OptionCard({ href, icon, title, body, cta, variant, hint }: {
   return (
     <Link
       href={href}
-      className={`group relative flex flex-col overflow-hidden rounded-3xl border p-6 transition-all duration-300 hover:-translate-y-1 ${
+      className={`group relative flex flex-col overflow-hidden rounded-3xl border p-6 transition-all lg:p-8 duration-300 hover:-translate-y-1 ${
         primary ? "border-primary/50 bg-gradient-to-br from-primary/30 via-card to-pink/20 shadow-[var(--shadow-glow)]" : "border-line-strong bg-card hover:border-accent/50"
       }`}
     >
       <div className={`grid size-12 place-items-center rounded-2xl ${primary ? "bg-grad-primary text-white" : "bg-card-2 text-accent"}`}>{icon}</div>
-      <h2 className="mt-4 font-display text-xl font-bold">{title}</h2>
-      <p className="mt-1.5 flex-1 text-sm text-text-2">{body}</p>
+      <h2 className="mt-4 font-display text-xl font-bold lg:text-2xl">{title}</h2>
+      <p className="mt-1.5 flex-1 text-sm text-text-2 lg:text-[15px]">{body}</p>
       {hint}
       <span className={`mt-5 inline-flex items-center gap-2 text-sm font-semibold ${primary ? "text-white" : "text-accent-light"}`}>
         {cta} <ArrowRight className="size-4 transition-transform group-hover:translate-x-1" />
@@ -158,7 +161,7 @@ export function QrStateView({ state, event }: { state: string; event?: PublicEve
 export function LandingSkeleton() {
   return (
     <main className="ambient min-h-dvh">
-      <div className="mx-auto max-w-3xl space-y-5 px-5 pt-36">
+      <div className="mx-auto max-w-5xl space-y-5 px-5 pt-36 sm:px-8 lg:pt-48">
         <Skeleton className="h-6 w-28" />
         <Skeleton className="h-12 w-4/5" />
         <Skeleton className="h-4 w-40" />

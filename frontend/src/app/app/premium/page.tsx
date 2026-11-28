@@ -77,7 +77,7 @@ export default function PremiumPage() {
   }
 
   return (
-    <AttendeePage title="Premium" className="max-w-4xl">
+    <AttendeePage title="Premium" className="max-w-6xl">
       <PageHeader title={<span className="inline-flex items-center gap-2"><Crown className="size-6 text-pink" />QRious Premium</span>} subtitle="Networking essentials are free forever. Premium adds power tools." />
       {billing.isLoading || plans.isLoading ? <Skeleton className="h-96" /> : (
         <div className="space-y-6">

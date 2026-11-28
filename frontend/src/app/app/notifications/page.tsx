@@ -8,7 +8,7 @@ import { NotificationCenter } from "@/components/notifications/Notifications";
 /** Attendee notification centre: messages, groups, connections, events, Smart Match, Premium, account, security, announcements. */
 export default function NotificationsPage() {
   return (
-    <AttendeePage title="Notifications" className="max-w-3xl">
+    <AttendeePage title="Notifications" className="max-w-4xl">
       <PageHeader title="Notifications" actions={<ButtonLink href="/app/settings#notifications" variant="secondary" size="sm">Settings</ButtonLink>} />
       <NotificationCenter role="attendee" />
     </AttendeePage>

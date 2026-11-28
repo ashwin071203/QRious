@@ -53,7 +53,7 @@ export default function ConnectionsPage() {
   }
 
   return (
-    <AttendeePage title="Connections" className="max-w-3xl">
+    <AttendeePage title="Connections" className="max-w-5xl">
       <PageHeader title="Connections" subtitle="One connection per person, across every event." />
       <Tabs value={kind} onChange={setKind} items={[
         { value: "accepted", label: "Connections" },

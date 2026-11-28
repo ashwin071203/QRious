@@ -46,7 +46,7 @@ export function AvailabilityView({ params }: { params: Promise<{ eventId: string
   const intents = data?.intentions ?? [];
 
   return (
-    <AttendeePage eventId={eventId} title="Open to Talk" className="max-w-2xl">
+    <AttendeePage eventId={eventId} title="Open to Talk" className="max-w-3xl">
       <PageHeader title="Open to Talk" subtitle={data ? `Your status at ${data.event.name} only.` : undefined} />
       {isLoading || !p ? <Skeleton className="h-96" /> : (
         <div className="space-y-5">

@@ -17,7 +17,7 @@ export function ConnectionProfileView({ params }: { params: Promise<{ profileId:
   const ev = useEventContext();
   const q = useQuery({ queryKey: ["connection-profile", profileId], queryFn: () => api<PersonCard>(`/people/${profileId}`) });
   return (
-    <AttendeePage title={q.data?.displayName} className="max-w-3xl">
+    <AttendeePage title={q.data?.displayName} className="max-w-5xl">
       <button onClick={() => router.back()} className="mb-4 inline-flex items-center gap-1.5 text-sm text-text-2 hover:text-text"><ArrowLeft className="size-4" />Back</button>
       {q.isLoading ? <Skeleton className="h-80" /> : q.error ? (
         <div className="card"><EmptyState icon={<UserX className="size-7" />} title="Profile unavailable">{q.error instanceof ApiError ? q.error.message : "Something went wrong."}</EmptyState></div>

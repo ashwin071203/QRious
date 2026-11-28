@@ -17,7 +17,7 @@ export default function ProfilePage() {
   return (
     <>
       <TopBar title="Profile" />
-      <PageContainer className="max-w-3xl">
+      <PageContainer className="max-w-5xl">
         {isLoading || !p ? (
           <div className="space-y-4"><Skeleton className="h-48" /><Skeleton className="h-32" /></div>
         ) : (
@@ -46,8 +46,10 @@ export default function ProfilePage() {
               </div>
             </section>
 
-            <TagSection title="Interests" tags={p.interests} />
-            <TagSection title="Skills" tags={p.skills} />
+            <div className="grid gap-5 md:grid-cols-2">
+              <TagSection title="Interests" tags={p.interests} />
+              <TagSection title="Skills" tags={p.skills} />
+            </div>
 
             {(p.lookingForText || p.lookingForSkills.length > 0 || p.canOfferText) && (
               <section className="card grid gap-5 p-5 sm:grid-cols-2">

@@ -19,7 +19,7 @@ export function PersonView({ params }: { params: Promise<{ eventId: string; prof
   const open = me?.event.networkingStatus === "open";
 
   return (
-    <AttendeePage eventId={eventId} title={q.data?.displayName} className="max-w-3xl">
+    <AttendeePage eventId={eventId} title={q.data?.displayName} className="max-w-5xl">
       <button onClick={() => router.back()} className="mb-4 inline-flex items-center gap-1.5 text-sm text-text-2 hover:text-text"><ArrowLeft className="size-4" />Back</button>
       {q.isLoading ? <Skeleton className="h-80" />
         : q.error ? <div className="card"><EmptyState icon={<ArrowLeft className="size-7" />} title="Profile unavailable">{q.error instanceof ApiError ? q.error.message : "Something went wrong."}</EmptyState></div>

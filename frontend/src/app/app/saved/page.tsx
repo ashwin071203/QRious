@@ -18,7 +18,7 @@ export default function SavedPage() {
       {q.isError ? <ErrorState error={q.error} onRetry={() => q.refetch()} /> : q.isLoading ? <Skeleton className="h-40" /> : !q.data?.length ? (
         <div className="card"><EmptyState icon={<Bookmark className="size-7" />} title="Nothing saved yet">Tap Save on someone&apos;s profile to keep them here.</EmptyState></div>
       ) : (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
           {q.data.map((p, i) => {
             const eventId = p.eventId ?? ev;
             const href = p.connectionState === "connected" || p.audience === "connection" || !eventId ? `/app/people/${p.id}` : `/app/events/${eventId}/people/${p.id}`;

@@ -27,7 +27,7 @@ export default function SettingsPage() {
   return (
     <>
       <TopBar title="Settings" />
-      <PageContainer className="max-w-2xl space-y-5">
+      <PageContainer className="max-w-3xl space-y-5">
         <h1 className="font-display text-2xl font-bold">Privacy &amp; settings</h1>
         {profile ? <PrivacySection profile={profile} /> : <Skeleton className="h-48" />}
         <NotificationPrefsSection />

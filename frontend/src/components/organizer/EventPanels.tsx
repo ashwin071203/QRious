@@ -83,20 +83,24 @@ export function QrDesktop({ e, onChange }: { e: OrgEventDetail; onChange: (d: Or
         {e.qr && (
           <section className={panel}>
             <PanelHeader title="Download" subtitle="High-contrast codes that scan reliably." icon={<Download className="size-5" />} />
-            <div className="grid gap-3 p-5 sm:grid-cols-3">
+            <ul className="space-y-2.5 p-5">
               {[
                 { href: `${img}?format=png&size=2048&download=1`, icon: <Printer className="size-5" />, title: "Print", meta: "PNG · 2048px" },
                 { href: `${img}?format=png&size=1024&download=1`, icon: <FileImage className="size-5" />, title: "Screen", meta: "PNG · 1024px" },
                 { href: `${img}?format=svg&download=1`, icon: <Sparkles className="size-5" />, title: "Vector", meta: "SVG · scalable" },
               ].map((d) => (
-                <a key={d.title} href={d.href} className="group rounded-2xl border border-line bg-bg-2 p-4 transition-colors hover:border-accent/50 hover:bg-primary/[0.06]">
-                  <span className="text-accent-light">{d.icon}</span>
-                  <p className="mt-3 font-semibold">{d.title}</p>
-                  <p className="text-xs whitespace-nowrap text-text-2">{d.meta}</p>
-                  <p className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-accent-light opacity-80 group-hover:opacity-100"><Download className="size-3.5" />Download</p>
-                </a>
+                <li key={d.title}>
+                  <a href={d.href} className="group flex min-w-0 items-center gap-3 rounded-2xl border border-line bg-bg-2 px-4 py-3 transition-colors hover:border-accent/50 hover:bg-primary/[0.06]">
+                    <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-card-2 text-accent-light">{d.icon}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-semibold">{d.title}</span>
+                      <span className="block truncate text-xs text-text-2">{d.meta}</span>
+                    </span>
+                    <span className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-accent-light opacity-80 group-hover:opacity-100"><Download className="size-4" /><span className="hidden sm:inline">Download</span></span>
+                  </a>
+                </li>
               ))}
-            </div>
+            </ul>
           </section>
         )}
 
